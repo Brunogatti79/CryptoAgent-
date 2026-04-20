@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#080b14">
+<title>Crypto Agent — Timeline</title>
+<style>
+  :root {
+    --bg:     #080b14; --card:   #0f1424; --card2:  #161b2e;
+    --border: #1e2640; --text:   #e2e8f0; --muted:  #64748b; --dim: #94a3b8;
+    --green:  #10b981; --red:    #ef4444; --amber:  #f59e0b;
+    --blue:   #3b82f6; --purple: #8b5cf6; --cyan:   #06b6d4;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text);
+         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+         min-height: 100vh; }
+
+  .topbar {
+    position: sticky; top: 0; z-index: 100;
+    background: rgba(8,11,20,.92); backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 20px;
+  }
+  .topbar-title { font-size: 1rem; font-weight: 700; }
+  .topbar-title span { color: var(--purple); }
+  .topbar-right { display: flex; gap: 10px; align-items: center; }
+
+  .filters {
+    display: flex; gap: 8px; flex-wrap: wrap;
+    padding: 14px 20px; border-bottom: 1px solid var(--border);
+    background: var(--card);
+  }
+  .filter-btn {
+    padding: 5px 12px; border-radius: 8px; font-size: .75rem; font-weight: 600;
+    border: 1px solid var(--border); background: var(--card2);
+    color: var(--dim); cursor: pointer; transition: all .15s;
+  }
+  .filter-btn.active { color: var(--text); border-color: var(--purple); background: rgba(139,92,246,.15); }
+  .filter-sep { width: 1px; background: var(--border); margin: 0 2px; }
+
+  .stats-bar {
+    display: flex; gap: 20px; padding: 10px 20px;
+    border-bottom: 1px solid var(--border); flex-wrap: wrap;
+  }
+  .stat-item { font-size: .78rem; color: var(--muted); }
+  .stat-item b { color: var(--text); }
+
+  .timeline-wrap { padding: 20px; max-width: 860px; margin: 0 auto; }
+
+  .tl-item {
+    display: flex; gap: 14px; margin-bottom: 4px;
+    position: relative;
+  }
+  .tl-item:not(:last-child)::after {
+    content: ''; position: absolute; left: 15px; top: 34px;
+    width: 2px; bottom: -4px; background: var(--border);
+  }
+  .tl-dot-wrap { flex-shrink: 0; padding-top: 6px; }
+  .tl-dot {
+    width: 32px; height: 32px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: .85rem; border: 2px solid; flex-shrink: 0;
+  }
+  .tl-body {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 12px; padding: 10px 14px; flex: 1;
+    margin-bottom: 10px; cursor: pointer;
+  }
+  .tl-body:hover { border-color: rgba(139,92,246,.3); }
+  .tl-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+  .tl-title  { font-size: .88rem; font-weight: 600; line-height: 1.3; }
+  .tl-meta   { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
+  .tl-time   { font-size: .7rem; color: var(--muted); white-space: nowrap; }
+  .tl-details {
+    margin-top: 8px; padding: 8px 10px;
+    background: var(--card2); border-radius: 8px;
+    font-size: .75rem; color: var(--dim); line-height: 1.7;
+    display: none;
+  }
+  .tl-details.open { display: block; }
+  .tl-details b { color: var(--text); }
+
+  .tag {
+    display: inline-block; font-size: .62rem; font-weight: 700;
+    padding: 1px 6px; border-radius: 4px; white-space: nowrap;
+  }
+  .tag-a    { background: rgba(59,130,246,.15); color: var(--blue); }
+  .tag-b    { background: rgba(245,158,11,.15); color: var(--amber); }
+  .tag-type { background: rgba(139,92,246,.15); color: var(--purple); }
+
+  /* Level colors */
+  .lv-SUCCESS { background: rgba(16,185,129,.12);  border-color: rgba(16,185,129,.3);  color: var(--green); }
+  .lv-ERROR   { background: rgba(239,68,68,.12);   border-color: rgba(239,68,68,.3);   color: var(--red); }
+  .lv-WARNING { background: rgba(245,158,11,.12);  border-color: rgba(245,158,11,.3);  color: var(--amber); }
+  .lv-INFO    { background: rgba(59,130,246,.1);   border-color: rgba(59,130,246,.25); color: var(--blue); }
+
+  .level-SUCCESS .tl-title { color: var(--green); }
+  .level-ERROR   .tl-title { color: var(--red); }
+  .level-WARNING .tl-title { color: var(--amber); }
+
+  .empty { text-align: center; color: var(--muted); padding: 60px 20px; font-size: .9rem; }
+
+  .load-more {
+    display: block; width: 100%; padding: 12px;
+    background: var(--card); border: 1px solid var(--border);
+    color: var(--dim); border-radius: 12px; font-size: .85rem;
+    cursor: pointer; margin-top: 4px; text-align: center;
+  }
+  .load-more:hover { border-color: var(--purple); color: var(--text); }
+
+  .dl-btn {
+    padding: 6px 14px; background: rgba(139,92,246,.15);
+    border: 1px solid rgba(139,92,246,.3); color: var(--purple);
+    border-radius: 8px; font-size: .78rem; font-weight: 600; cursor: pointer;
+  }
+  .dl-btn:hover { background: rgba(139,92,246,.25); }
+
+  .refresh-btn {
+    padding: 6px 12px; background: var(--card2);
+    border: 1px solid var(--border); color: var(--dim);
+    border-radius: 8px; font-size: .78rem; cursor: pointer;
+  }
+  .refresh-btn:hover { color: var(--text); }
+
+  .spinner { display: inline-block; animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-title">Crypto<span>Agent</span> — Timeline</div>
+  <div class="topbar-right">
+    <span id="total-label" style="font-size:.75rem;color:var(--muted)"></span>
+    <button class="refresh-btn" onclick="loadEvents(true)">↺ Actualizar</button>
+    <button class="dl-btn" onclick="downloadJSON()">⬇ JSON</button>
+  </div>
+</div>
+
+<div class="stats-bar" id="stats-bar"></div>
+
+<div class="filters">
+  <button class="filter-btn active" data-type="" onclick="setFilter('')">Todos</button>
+  <div class="filter-sep"></div>
+  <button class="filter-btn" data-type="TRADE_OPEN"    onclick="setFilter('TRADE_OPEN')">📥 Apertura</button>
+  <button class="filter-btn" data-type="TRADE_CLOSE"   onclick="setFilter('TRADE_CLOSE')">📤 Cierre</button>
+  <button class="filter-btn" data-type="REGIME_EXIT"   onclick="setFilter('REGIME_EXIT')">🔄 Régimen exit</button>
+  <button class="filter-btn" data-type="REGIME_CHANGE" onclick="setFilter('REGIME_CHANGE')">📊 Régimen cambio</button>
+  <div class="filter-sep"></div>
+  <button class="filter-btn" data-type="CLAUDE_SIGNAL" onclick="setFilter('CLAUDE_SIGNAL')">🧠 Claude señal</button>
+  <button class="filter-btn" data-type="MOVER_DETECTED" onclick="setFilter('MOVER_DETECTED')">🚀 Mover B</button>
+  <div class="filter-sep"></div>
+  <button class="filter-btn" data-type="DAILY_HALT"    onclick="setFilter('DAILY_HALT')">🛑 Daily halt</button>
+  <button class="filter-btn" data-type="STARTUP"       onclick="setFilter('STARTUP')">⚡ Startup</button>
+</div>
+
+<div class="timeline-wrap">
+  <div id="timeline-container"><div class="empty">Cargando eventos...</div></div>
+  <button class="load-more" id="load-more-btn" style="display:none" onclick="loadMore()">Cargar más</button>
+</div>
+
+<script>
+const AGENT_URL = window.location.origin;
+let currentFilter = '';
+let currentOffset = 0;
+const PAGE_SIZE   = 50;
+let allRawEvents  = [];
+let totalEvents   = 0;
+
+const TYPE_ICONS = {
+  STARTUP:        '⚡',
+  TRADE_OPEN:     '📥',
+  TRADE_CLOSE:    '📤',
+  REGIME_EXIT:    '🔄',
+  REGIME_CHANGE:  '📊',
+  CLAUDE_SIGNAL:  '🧠',
+  CLAUDE_ANALYSIS:'🧠',
+  MOVER_DETECTED: '🚀',
+  GROUP_B_SCAN:   '🔍',
+  DAILY_HALT:     '🛑',
+  DAILY_RESET:    '🌅',
+  MANUAL_CLOSE:   '✋',
+};
+
+function toAR(iso) {
+  return new Date(iso).toLocaleString('es-AR', {
+    timeZone: 'America/Argentina/Buenos_Aires',
+    day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit'
+  });
+}
+
+function timeSince(iso) {
+  const diff = (Date.now() - new Date(iso)) / 1000;
+  if (diff < 60)    return `hace ${Math.round(diff)}s`;
+  if (diff < 3600)  return `hace ${Math.round(diff/60)}m`;
+  if (diff < 86400) return `hace ${Math.round(diff/3600)}h`;
+  return `hace ${Math.round(diff/86400)}d`;
+}
+
+function setFilter(type) {
+  currentFilter = type;
+  currentOffset = 0;
+  allRawEvents  = [];
+  document.querySelectorAll('.filter-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.type === type);
+  });
+  loadEvents(true);
+}
+
+async function loadEvents(reset = false) {
+  if (reset) { currentOffset = 0; allRawEvents = []; }
+  const url = `${AGENT_URL}/api/events?limit=${PAGE_SIZE}&offset=${currentOffset}` +
+              (currentFilter ? `&type=${currentFilter}` : '');
+  try {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    totalEvents = d.total;
+    allRawEvents = reset ? d.events : [...allRawEvents, ...d.events];
+    currentOffset = allRawEvents.length;
+    renderTimeline();
+    updateStats();
+    document.getElementById('total-label').textContent =
+      `${totalEvents} eventos totales`;
+    document.getElementById('load-more-btn').style.display =
+      allRawEvents.length < totalEvents ? 'block' : 'none';
+  } catch(e) {
+    document.getElementById('timeline-container').innerHTML =
+      `<div class="empty">No se pudo conectar al agente.<br><small>${e.message}</small></div>`;
+  }
+}
+
+function loadMore() { loadEvents(false); }
+
+function updateStats() {
+  const counts = {};
+  allRawEvents.forEach(e => { counts[e.type] = (counts[e.type]||0)+1; });
+  const wins   = allRawEvents.filter(e => e.type==='TRADE_CLOSE' && e.level==='SUCCESS').length;
+  const losses = allRawEvents.filter(e => e.type==='TRADE_CLOSE' && e.level==='ERROR').length;
+  const pnl    = allRawEvents
+    .filter(e => e.type==='TRADE_CLOSE' && e.details?.pnl_usd)
+    .reduce((s, e) => s + (e.details.pnl_usd||0), 0);
+
+  const el = document.getElementById('stats-bar');
+  el.innerHTML = `
+    <div class="stat-item">Trades abiertos: <b>${counts['TRADE_OPEN']||0}</b></div>
+    <div class="stat-item">Cerrados: <b>${(counts['TRADE_CLOSE']||0)}</b>
+      &nbsp;<span style="color:var(--green)">${wins}W</span>
+      &nbsp;<span style="color:var(--red)">${losses}L</span></div>
+    <div class="stat-item">PnL acumulado: <b style="color:${pnl>=0?'var(--green)':'var(--red)'}">$${pnl.toFixed(2)}</b></div>
+    <div class="stat-item">Señales Claude: <b>${counts['CLAUDE_SIGNAL']||0}</b></div>
+    <div class="stat-item">Movers B: <b>${counts['MOVER_DETECTED']||0}</b></div>
+    <div class="stat-item">Cambios régimen: <b>${counts['REGIME_CHANGE']||0}</b></div>
+  `;
+}
+
+function renderTimeline() {
+  const c = document.getElementById('timeline-container');
+  if (!allRawEvents.length) {
+    c.innerHTML = '<div class="empty">Sin eventos' +
+      (currentFilter ? ` de tipo <b>${currentFilter}</b>` : '') + '</div>';
+    return;
+  }
+
+  c.innerHTML = allRawEvents.map(ev => {
+    const icon    = TYPE_ICONS[ev.type] || '•';
+    const lvlCls  = `lv-${ev.level||'INFO'}`;
+    const bodyLvl = `level-${ev.level||'INFO'}`;
+    const grpTag  = ev.group
+      ? `<span class="tag tag-${ev.group.toLowerCase()}">${ev.group === 'B' ? '🚀 Grupo B' : 'Grupo A'}</span>`
+      : '';
+    const typeTag = `<span class="tag tag-type">${ev.type}</span>`;
+    const symTag  = ev.symbol
+      ? `<span style="font-size:.7rem;color:var(--cyan);font-weight:600">${ev.symbol}</span>`
+      : '';
+    const details = ev.details ? formatDetails(ev.details) : '';
+
+    return `
+    <div class="tl-item">
+      <div class="tl-dot-wrap">
+        <div class="tl-dot ${lvlCls}">${icon}</div>
+      </div>
+      <div class="tl-body ${bodyLvl}" onclick="toggleDetails(${ev.id})">
+        <div class="tl-header">
+          <div class="tl-title">${ev.title}</div>
+          <div class="tl-meta">
+            ${grpTag}
+            ${symTag}
+            <span class="tl-time" title="${toAR(ev.timestamp)}">${timeSince(ev.timestamp)}</span>
+          </div>
+        </div>
+        <div style="margin-top:4px;display:flex;gap:6px;flex-wrap:wrap">
+          ${typeTag}
+          <span class="tl-time">${toAR(ev.timestamp)}</span>
+        </div>
+        ${details ? `<div class="tl-details" id="det-${ev.id}">${details}</div>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function formatDetails(d) {
+  if (!d || typeof d !== 'object') return String(d);
+  const important = [];
+  const rest = [];
+  const highlight = ['result','pnl_usd','direction','conviction','thesis','reason',
+                     'from','to','change_24h','volume_usd','regime'];
+  for (const [k, v] of Object.entries(d)) {
+    if (v === null || v === undefined) continue;
+    const val = typeof v === 'number' ? v.toLocaleString('en-US', {maximumFractionDigits:4}) : v;
+    const line = `<b>${k}:</b> ${val}`;
+    if (highlight.includes(k)) important.push(line);
+    else rest.push(line);
+  }
+  return [...important, ...rest].join('<br>');
+}
+
+function toggleDetails(id) {
+  const el = document.getElementById('det-' + id);
+  if (el) el.classList.toggle('open');
+}
+
+async function downloadJSON() {
+  const url = `${AGENT_URL}/api/events?limit=500&offset=0` +
+              (currentFilter ? `&type=${currentFilter}` : '');
+  const r   = await fetch(url);
+  const d   = await r.json();
+  const blob = new Blob([JSON.stringify(d, null, 2)], {type: 'application/json'});
+  const a    = document.createElement('a');
+  a.href     = URL.createObjectURL(blob);
+  a.download = `crypto_agent_events_${new Date().toISOString().slice(0,10)}.json`;
+  a.click();
+}
+
+loadEvents(true);
+setInterval(() => loadEvents(true), 30000);
+</script>
+</body>
+</html>

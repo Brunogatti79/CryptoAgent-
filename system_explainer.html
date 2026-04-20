@@ -1,0 +1,908 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Crypto Agent — Arquitectura del Sistema</title>
+<style>
+  :root {
+    --bg:       #080b14;
+    --surface:  #0f1424;
+    --surface2: #161b2e;
+    --border:   #1e2640;
+    --blue:     #3b82f6;
+    --purple:   #8b5cf6;
+    --green:    #10b981;
+    --amber:    #f59e0b;
+    --red:      #ef4444;
+    --text:     #e2e8f0;
+    --muted:    #64748b;
+    --dim:      #94a3b8;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ── Stars background ── */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+      radial-gradient(1px 1px at 20% 30%, rgba(255,255,255,.15) 0%, transparent 100%),
+      radial-gradient(1px 1px at 80% 10%, rgba(255,255,255,.1) 0%, transparent 100%),
+      radial-gradient(1px 1px at 50% 70%, rgba(255,255,255,.12) 0%, transparent 100%),
+      radial-gradient(1px 1px at 10% 80%, rgba(255,255,255,.08) 0%, transparent 100%),
+      radial-gradient(1px 1px at 90% 60%, rgba(255,255,255,.1) 0%, transparent 100%);
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  main { position: relative; z-index: 1; max-width: 1100px; margin: 0 auto; padding: 0 24px 80px; }
+
+  /* ── Hero ── */
+  .hero {
+    text-align: center;
+    padding: 60px 24px 40px;
+  }
+  .hero-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(139,92,246,.15);
+    border: 1px solid rgba(139,92,246,.3);
+    border-radius: 20px;
+    padding: 5px 16px;
+    font-size: .8rem;
+    color: #a78bfa;
+    margin-bottom: 20px;
+    animation: fadeDown .6s ease both;
+  }
+  .hero h1 {
+    font-size: 2.4rem;
+    font-weight: 800;
+    letter-spacing: -.02em;
+    animation: fadeDown .6s .1s ease both;
+  }
+  .hero h1 span { color: var(--purple); }
+  .hero p {
+    color: var(--dim);
+    font-size: 1rem;
+    margin-top: 12px;
+    max-width: 560px;
+    margin-inline: auto;
+    line-height: 1.7;
+    animation: fadeDown .6s .2s ease both;
+  }
+  .cycle-tag {
+    display: inline-block;
+    margin-top: 20px;
+    background: rgba(16,185,129,.1);
+    border: 1px solid rgba(16,185,129,.25);
+    border-radius: 8px;
+    padding: 8px 20px;
+    font-size: .85rem;
+    color: var(--green);
+    animation: fadeDown .6s .3s ease both;
+  }
+
+  /* ── Pipeline diagram ── */
+  .pipeline-wrap {
+    margin: 48px 0 56px;
+    animation: fadeUp .7s .4s ease both;
+  }
+  .pipeline-wrap h2 {
+    text-align: center;
+    font-size: .75rem;
+    text-transform: uppercase;
+    letter-spacing: .12em;
+    color: var(--muted);
+    margin-bottom: 32px;
+  }
+  .pipeline {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding: 20px 0;
+  }
+
+  /* nodes */
+  .node {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+    cursor: pointer;
+  }
+  .node-box {
+    width: 88px;
+    height: 72px;
+    border-radius: 14px;
+    border: 1.5px solid;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    position: relative;
+    transition: transform .2s, box-shadow .2s;
+  }
+  .node:hover .node-box { transform: translateY(-3px); }
+  .node-box .icon { font-size: 1.4rem; }
+  .node-box .label { font-size: .65rem; font-weight: 600; text-align: center; line-height: 1.2; }
+
+  /* node colors */
+  .node-box.blue   { background: rgba(59,130,246,.1);  border-color: rgba(59,130,246,.4);  color: #93c5fd; }
+  .node-box.purple { background: rgba(139,92,246,.12); border-color: rgba(139,92,246,.4);  color: #c4b5fd; }
+  .node-box.green  { background: rgba(16,185,129,.1);  border-color: rgba(16,185,129,.35); color: #6ee7b7; }
+  .node-box.amber  { background: rgba(245,158,11,.1);  border-color: rgba(245,158,11,.35); color: #fcd34d; }
+  .node-box.red    { background: rgba(239,68,68,.08);  border-color: rgba(239,68,68,.3);   color: #fca5a5; }
+
+  /* pulse glow on node */
+  .node-box.blue.active   { box-shadow: 0 0 20px rgba(59,130,246,.4); }
+  .node-box.purple.active { box-shadow: 0 0 20px rgba(139,92,246,.5); }
+  .node-box.green.active  { box-shadow: 0 0 20px rgba(16,185,129,.4); }
+  .node-box.amber.active  { box-shadow: 0 0 20px rgba(245,158,11,.4); }
+
+  .node-label { font-size: .7rem; color: var(--muted); text-align: center; max-width: 88px; }
+
+  /* arrows */
+  .arrow {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    flex-shrink: 0;
+    width: 48px;
+    position: relative;
+  }
+  .arrow-line {
+    width: 100%;
+    height: 2px;
+    border-radius: 1px;
+    position: relative;
+    overflow: visible;
+  }
+  .arrow-line::after {
+    content: '';
+    position: absolute;
+    right: -6px;
+    top: -4px;
+    width: 0;
+    height: 0;
+    border-left: 8px solid;
+    border-top: 5px solid transparent;
+    border-bottom: 5px solid transparent;
+  }
+  .arrow-line.blue   { background: rgba(59,130,246,.4); }
+  .arrow-line.blue::after   { border-left-color: rgba(59,130,246,.6); }
+  .arrow-line.purple { background: rgba(139,92,246,.4); }
+  .arrow-line.purple::after { border-left-color: rgba(139,92,246,.6); }
+  .arrow-line.green  { background: rgba(16,185,129,.4); }
+  .arrow-line.green::after  { border-left-color: rgba(16,185,129,.6); }
+  .arrow-line.amber  { background: rgba(245,158,11,.4); }
+  .arrow-line.amber::after  { border-left-color: rgba(245,158,11,.6); }
+
+  .arrow-label { font-size: .58rem; color: var(--muted); text-align: center; white-space: nowrap; }
+
+  /* animated packet traveling on arrow */
+  .packet {
+    position: absolute;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    top: -2.5px;
+    animation: travel 2.4s linear infinite;
+  }
+  .packet.blue   { background: var(--blue);   box-shadow: 0 0 6px var(--blue); }
+  .packet.purple { background: var(--purple); box-shadow: 0 0 6px var(--purple); }
+  .packet.green  { background: var(--green);  box-shadow: 0 0 6px var(--green); }
+  .packet.amber  { background: var(--amber);  box-shadow: 0 0 6px var(--amber); }
+
+  @keyframes travel {
+    0%   { left: 0;    opacity: 0; }
+    10%  { opacity: 1; }
+    90%  { opacity: 1; }
+    100% { left: 100%; opacity: 0; }
+  }
+
+  /* stagger packets */
+  .arrow:nth-child(2)  .packet { animation-delay: 0s; }
+  .arrow:nth-child(4)  .packet { animation-delay: .4s; }
+  .arrow:nth-child(6)  .packet { animation-delay: .8s; }
+  .arrow:nth-child(8)  .packet { animation-delay: 1.2s; }
+  .arrow:nth-child(10) .packet { animation-delay: 1.6s; }
+  .arrow:nth-child(12) .packet { animation-delay: 2.0s; }
+
+  /* node pulse animation */
+  @keyframes nodePulse {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: .7; }
+  }
+
+  /* ── Section title ── */
+  .section-title {
+    font-size: .72rem;
+    text-transform: uppercase;
+    letter-spacing: .12em;
+    color: var(--muted);
+    margin-bottom: 20px;
+  }
+
+  /* ── Component cards ── */
+  .cards-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 16px;
+    margin-bottom: 56px;
+  }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    overflow: hidden;
+    cursor: pointer;
+    transition: border-color .2s, transform .2s;
+    animation: fadeUp .6s ease both;
+  }
+  .card:hover { transform: translateY(-2px); }
+  .card.blue   { border-top: 2px solid var(--blue);   }
+  .card.purple { border-top: 2px solid var(--purple); }
+  .card.green  { border-top: 2px solid var(--green);  }
+  .card.amber  { border-top: 2px solid var(--amber);  }
+  .card.red    { border-top: 2px solid var(--red);    }
+
+  .card-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 16px 18px;
+  }
+  .card-icon {
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.2rem;
+    flex-shrink: 0;
+  }
+  .card.blue   .card-icon { background: rgba(59,130,246,.15); }
+  .card.purple .card-icon { background: rgba(139,92,246,.15); }
+  .card.green  .card-icon { background: rgba(16,185,129,.12); }
+  .card.amber  .card-icon { background: rgba(245,158,11,.12); }
+  .card.red    .card-icon { background: rgba(239,68,68,.1);   }
+
+  .card-title { font-weight: 600; font-size: .95rem; }
+  .card-file  { font-size: .72rem; color: var(--muted); font-family: monospace; margin-top: 2px; }
+  .card-chevron { margin-left: auto; color: var(--muted); font-size: .75rem; transition: transform .25s; }
+  .card.open .card-chevron { transform: rotate(180deg); }
+
+  .card-body {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height .35s ease;
+  }
+  .card.open .card-body { max-height: 600px; }
+
+  .card-inner {
+    padding: 0 18px 18px;
+    border-top: 1px solid var(--border);
+  }
+  .card-desc {
+    color: var(--dim);
+    font-size: .85rem;
+    line-height: 1.65;
+    margin: 14px 0 14px;
+  }
+
+  .step-list { list-style: none; display: flex; flex-direction: column; gap: 8px; }
+  .step-list li {
+    display: flex;
+    gap: 10px;
+    font-size: .83rem;
+    color: var(--dim);
+    line-height: 1.5;
+  }
+  .step-num {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: .7rem;
+    font-weight: 700;
+    flex-shrink: 0;
+    margin-top: 1px;
+  }
+  .card.blue   .step-num { background: rgba(59,130,246,.2);  color: #93c5fd; }
+  .card.purple .step-num { background: rgba(139,92,246,.2);  color: #c4b5fd; }
+  .card.green  .step-num { background: rgba(16,185,129,.15); color: #6ee7b7; }
+  .card.amber  .step-num { background: rgba(245,158,11,.15); color: #fcd34d; }
+  .card.red    .step-num { background: rgba(239,68,68,.12);  color: #fca5a5; }
+
+  .tag-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+  .tag {
+    font-size: .72rem;
+    border-radius: 5px;
+    padding: 3px 9px;
+    font-family: monospace;
+  }
+  .card.blue   .tag { background: rgba(59,130,246,.12);  color: #93c5fd; }
+  .card.purple .tag { background: rgba(139,92,246,.12);  color: #c4b5fd; }
+  .card.green  .tag { background: rgba(16,185,129,.1);   color: #6ee7b7; }
+  .card.amber  .tag { background: rgba(245,158,11,.1);   color: #fcd34d; }
+  .card.red    .tag { background: rgba(239,68,68,.08);   color: #fca5a5; }
+
+  /* ── Regime visual ── */
+  .regime-mini-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin-top: 12px;
+  }
+  .regime-mini {
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: .78rem;
+  }
+  .regime-mini .rname { font-weight: 700; margin-bottom: 3px; }
+  .regime-mini .rdesc { color: rgba(255,255,255,.5); font-size: .72rem; }
+  .rm-bull { background: rgba(16,185,129,.1);  border: 1px solid rgba(16,185,129,.2); color: #6ee7b7; }
+  .rm-bear { background: rgba(239,68,68,.08);  border: 1px solid rgba(239,68,68,.2);  color: #fca5a5; }
+  .rm-side { background: rgba(100,116,139,.1); border: 1px solid rgba(100,116,139,.2);color: #94a3b8; }
+  .rm-rev  { background: rgba(245,158,11,.08); border: 1px solid rgba(245,158,11,.2); color: #fcd34d; }
+
+  /* ── Prompt preview ── */
+  .prompt-preview {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+    font-family: monospace;
+    font-size: .75rem;
+    color: #a5b4fc;
+    margin-top: 12px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+  }
+  .prompt-preview .hl { color: #c4b5fd; font-weight: 700; }
+  .prompt-preview .val { color: #6ee7b7; }
+  .prompt-preview .comment { color: var(--muted); }
+
+  /* ── Flow timeline ── */
+  .timeline {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 28px 32px;
+    margin-bottom: 56px;
+    animation: fadeUp .6s .5s ease both;
+  }
+  .timeline h2 { font-size: 1rem; font-weight: 600; margin-bottom: 24px; }
+  .tl-steps { display: flex; flex-direction: column; gap: 0; }
+  .tl-step {
+    display: flex;
+    gap: 16px;
+    position: relative;
+  }
+  .tl-step:not(:last-child)::before {
+    content: '';
+    position: absolute;
+    left: 15px;
+    top: 32px;
+    bottom: 0;
+    width: 2px;
+    background: var(--border);
+  }
+  .tl-dot {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: .85rem;
+    flex-shrink: 0;
+    position: relative;
+    z-index: 1;
+  }
+  .tl-content { padding: 4px 0 28px; }
+  .tl-time { font-size: .7rem; color: var(--muted); margin-bottom: 3px; font-family: monospace; }
+  .tl-title { font-weight: 600; font-size: .9rem; margin-bottom: 4px; }
+  .tl-desc { font-size: .82rem; color: var(--dim); line-height: 1.5; }
+
+  /* ── Tech stack ── */
+  .tech-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 10px;
+    animation: fadeUp .6s .6s ease both;
+  }
+  .tech-item {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px;
+    text-align: center;
+  }
+  .tech-item .t-icon { font-size: 1.3rem; margin-bottom: 6px; }
+  .tech-item .t-name { font-size: .82rem; font-weight: 600; }
+  .tech-item .t-role { font-size: .72rem; color: var(--muted); margin-top: 3px; }
+
+  /* ── Animations ── */
+  @keyframes fadeDown {
+    from { opacity: 0; transform: translateY(-16px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(16px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  .cards-grid .card:nth-child(1) { animation-delay: .1s; }
+  .cards-grid .card:nth-child(2) { animation-delay: .15s; }
+  .cards-grid .card:nth-child(3) { animation-delay: .2s; }
+  .cards-grid .card:nth-child(4) { animation-delay: .25s; }
+  .cards-grid .card:nth-child(5) { animation-delay: .3s; }
+  .cards-grid .card:nth-child(6) { animation-delay: .35s; }
+</style>
+</head>
+<body>
+
+<!-- ── Hero ── -->
+<div class="hero">
+  <div class="hero-badge">🤖 Arquitectura del Sistema</div>
+  <h1>Crypto Agent<br><span>paso a paso</span></h1>
+  <p>Cómo un pipeline de datos, machine learning y lenguaje natural
+     toman decisiones de trading de forma autónoma.</p>
+  <div class="cycle-tag">⏱ Ciclo de ejecución: cada 4 horas</div>
+</div>
+
+<main>
+
+<!-- ── Pipeline ── -->
+<div class="pipeline-wrap">
+  <h2>flujo de datos</h2>
+  <div class="pipeline">
+
+    <div class="node" onclick="pulse(this, 'blue')">
+      <div class="node-box blue active">
+        <span class="icon">📡</span>
+        <span class="label">Binance<br>API</span>
+      </div>
+      <div class="node-label">fuente de datos</div>
+    </div>
+
+    <div class="arrow">
+      <div class="arrow-line blue"><div class="packet blue"></div></div>
+      <div class="arrow-label">velas 4h<br>OHLCV</div>
+    </div>
+
+    <div class="node" onclick="pulse(this, 'blue')">
+      <div class="node-box blue">
+        <span class="icon">🔢</span>
+        <span class="label">data.py<br>regime.py</span>
+      </div>
+      <div class="node-label">indicadores<br>+ régimen</div>
+    </div>
+
+    <div class="arrow">
+      <div class="arrow-line purple"><div class="packet purple" style="animation-delay:.6s"></div></div>
+      <div class="arrow-label">contexto<br>enriquecido</div>
+    </div>
+
+    <div class="node" onclick="pulse(this, 'purple')">
+      <div class="node-box purple">
+        <span class="icon">🧠</span>
+        <span class="label">brain.py<br>Claude</span>
+      </div>
+      <div class="node-label">análisis IA</div>
+    </div>
+
+    <div class="arrow">
+      <div class="arrow-line green"><div class="packet green" style="animation-delay:1.2s"></div></div>
+      <div class="arrow-label">señales<br>parseadas</div>
+    </div>
+
+    <div class="node" onclick="pulse(this, 'green')">
+      <div class="node-box green">
+        <span class="icon">⚡</span>
+        <span class="label">executor<br>.py</span>
+      </div>
+      <div class="node-label">órdenes</div>
+    </div>
+
+    <div class="arrow">
+      <div class="arrow-line green"><div class="packet green" style="animation-delay:1.8s"></div></div>
+      <div class="arrow-label">orden<br>mercado</div>
+    </div>
+
+    <div class="node" onclick="pulse(this, 'green')">
+      <div class="node-box green">
+        <span class="icon">🏦</span>
+        <span class="label">Binance<br>Testnet</span>
+      </div>
+      <div class="node-label">exchange</div>
+    </div>
+
+    <div class="arrow">
+      <div class="arrow-line amber"><div class="packet amber" style="animation-delay:2.2s"></div></div>
+      <div class="arrow-label">notifica</div>
+    </div>
+
+    <div class="node" onclick="pulse(this, 'amber')">
+      <div class="node-box amber">
+        <span class="icon">📱</span>
+        <span class="label">Telegram</span>
+      </div>
+      <div class="node-label">alertas</div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ── Timeline ── -->
+<div class="timeline">
+  <h2>¿Qué pasa en cada ciclo de 4h?</h2>
+  <div class="tl-steps">
+
+    <div class="tl-step">
+      <div class="tl-dot" style="background:rgba(59,130,246,.15);color:#93c5fd">1</div>
+      <div class="tl-content">
+        <div class="tl-time">t = 0s</div>
+        <div class="tl-title" style="color:#93c5fd">Fetch de mercado</div>
+        <div class="tl-desc"><code>data.py</code> llama a Binance Public API y descarga las últimas 100 velas de 4h para cada par. Calcula RSI(14), EMA20, EMA50, ratio de volumen y cambio de la última vela. No requiere API key.</div>
+      </div>
+    </div>
+
+    <div class="tl-step">
+      <div class="tl-dot" style="background:rgba(139,92,246,.15);color:#c4b5fd">2</div>
+      <div class="tl-content">
+        <div class="tl-time">t = ~1s</div>
+        <div class="tl-title" style="color:#c4b5fd">Clasificación de régimen</div>
+        <div class="tl-desc"><code>regime.py</code> carga el modelo HMM pre-entrenado desde disco (cache en memoria). Calcula 5 features estadísticas de las velas 4h: log-return, volatilidad rolling, ratio de volumen, RSI centrado y pendiente de EMA50. El HMM predice en cuál de los 4 estados está el mercado actualmente.</div>
+      </div>
+    </div>
+
+    <div class="tl-step">
+      <div class="tl-dot" style="background:rgba(139,92,246,.15);color:#c4b5fd">3</div>
+      <div class="tl-content">
+        <div class="tl-time">t = ~2s</div>
+        <div class="tl-title" style="color:#c4b5fd">Construcción del prompt</div>
+        <div class="tl-desc"><code>brain.py</code> combina el bloque de régimen (cuántas horas lleva el estado actual, probabilidad de persistencia, volatilidad del estado) con los indicadores de mercado. Este texto completo es lo que recibe Claude como input.</div>
+      </div>
+    </div>
+
+    <div class="tl-step">
+      <div class="tl-dot" style="background:rgba(139,92,246,.2);color:#c4b5fd">4</div>
+      <div class="tl-content">
+        <div class="tl-time">t = ~3–6s</div>
+        <div class="tl-title" style="color:#c4b5fd">Análisis Claude (API)</div>
+        <div class="tl-desc">Claude recibe el contexto y sigue el system prompt: evalúa el régimen primero, luego los indicadores técnicos, luego el Fear &amp; Greed Index. Emite un bloque estructurado por activo con dirección, convicción 1-10, entrada, stop-loss, take-profit y tesis.</div>
+      </div>
+    </div>
+
+    <div class="tl-step">
+      <div class="tl-dot" style="background:rgba(59,130,246,.15);color:#93c5fd">5</div>
+      <div class="tl-content">
+        <div class="tl-time">t = ~6s</div>
+        <div class="tl-title" style="color:#93c5fd">Parseo de señales</div>
+        <div class="tl-desc">El texto de Claude es parseado con regex. Se extraen símbolo, dirección, convicción, precios de entrada/stop/target. Una señal es "accionable" si convicción ≥ 7 y la dirección no es NEUTRAL.</div>
+      </div>
+    </div>
+
+    <div class="tl-step">
+      <div class="tl-dot" style="background:rgba(16,185,129,.15);color:#6ee7b7">6</div>
+      <div class="tl-content">
+        <div class="tl-time">t = ~7s</div>
+        <div class="tl-title" style="color:#6ee7b7">Ejecución (si hay señal)</div>
+        <div class="tl-desc"><code>executor.py</code> verifica límites de riesgo: máximo de posiciones abiertas, pérdida diaria máxima, tamaño por operación. Si todo pasa, coloca una orden de mercado en Binance Testnet via <code>ccxt</code>. Guarda el trade en SQLite.</div>
+      </div>
+    </div>
+
+    <div class="tl-step">
+      <div class="tl-dot" style="background:rgba(245,158,11,.12);color:#fcd34d">7</div>
+      <div class="tl-content">
+        <div class="tl-time">t = ~8s</div>
+        <div class="tl-title" style="color:#fcd34d">Alertas Telegram</div>
+        <div class="tl-desc">Se envían las señales al celular con régimen actual, convicción, precio de entrada, stop y target. Al final del ciclo llega un resumen silencioso con el estado del portafolio. El agente duerme 4 horas y repite.</div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ── Component cards ── -->
+<p class="section-title">componentes del sistema</p>
+<div class="cards-grid">
+
+  <!-- data.py -->
+  <div class="card blue" onclick="toggleCard(this)">
+    <div class="card-header">
+      <div class="card-icon">🔢</div>
+      <div>
+        <div class="card-title">Datos de mercado</div>
+        <div class="card-file">data.py</div>
+      </div>
+      <div class="card-chevron">▼</div>
+    </div>
+    <div class="card-body">
+      <div class="card-inner">
+        <div class="card-desc">
+          Llama a la API pública de Binance (sin autenticación) y construye el contexto técnico
+          que recibirá Claude. Migrado a velas de 4h para alinearse con el timeframe del HMM.
+        </div>
+        <ul class="step-list">
+          <li><span class="step-num">1</span>GET /api/v3/ticker/24hr → precio actual y cambio 24h</li>
+          <li><span class="step-num">2</span>GET /api/v3/klines?interval=4h&limit=100 → velas OHLCV</li>
+          <li><span class="step-num">3</span>Calcula RSI(14) con Wilder smoothing sobre los closes</li>
+          <li><span class="step-num">4</span>EMA20, EMA50 → determina tendencia (ALCISTA/BAJISTA)</li>
+          <li><span class="step-num">5</span>vol_ratio = volumen actual / MA20 del volumen</li>
+        </ul>
+        <div class="tag-row">
+          <span class="tag">requests</span>
+          <span class="tag">pandas</span>
+          <span class="tag">Binance Public API</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- regime.py -->
+  <div class="card purple" onclick="toggleCard(this)">
+    <div class="card-header">
+      <div class="card-icon">🎯</div>
+      <div>
+        <div class="card-title">Clasificador de Régimen</div>
+        <div class="card-file">regime.py · models/hmm_*.pkl</div>
+      </div>
+      <div class="card-chevron">▼</div>
+    </div>
+    <div class="card-body">
+      <div class="card-inner">
+        <div class="card-desc">
+          Carga un modelo GaussianHMM pre-entrenado sobre 2 años de datos 4h.
+          Detecta en cuál de los 4 estados estadísticos está el mercado ahora mismo.
+          El modelo se cachea en memoria — no hay I/O de disco en cada ciclo.
+        </div>
+        <ul class="step-list">
+          <li><span class="step-num">1</span>Carga <code>hmm_{SYMBOL}.pkl</code> con joblib (primera vez)</li>
+          <li><span class="step-num">2</span>Computa 5 features: log_return, vol_rolling_20, vol_ratio, RSI centrado, EMA50 slope</li>
+          <li><span class="step-num">3</span>StandardScaler normaliza las features (mismo scaler del entrenamiento)</li>
+          <li><span class="step-num">4</span>model.predict() → secuencia de estados por Viterbi</li>
+          <li><span class="step-num">5</span>Cuenta barras consecutivas en el estado actual, extrae probabilidad de persistencia de la transmat</li>
+        </ul>
+        <div class="regime-mini-grid">
+          <div class="regime-mini rm-bull"><div class="rname">📈 BULL_TREND</div><div class="rdesc">vol 0.70%/4h · EMA slope +0.36%</div></div>
+          <div class="regime-mini rm-bear"><div class="rname">📉 BEAR_TREND</div><div class="rdesc">vol 1.50%/4h · caída pronunciada</div></div>
+          <div class="regime-mini rm-side"><div class="rname">➡️ SIDEWAYS</div><div class="rdesc">vol 0.66%/4h · deriva bajista lenta</div></div>
+          <div class="regime-mini rm-rev"><div class="rname">🔄 REVERSAL</div><div class="rdesc">vol 1.12%/4h · recuperación</div></div>
+        </div>
+        <div class="tag-row">
+          <span class="tag">hmmlearn</span>
+          <span class="tag">GaussianHMM</span>
+          <span class="tag">joblib</span>
+          <span class="tag">sklearn.StandardScaler</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- brain.py -->
+  <div class="card purple" onclick="toggleCard(this)">
+    <div class="card-header">
+      <div class="card-icon">🧠</div>
+      <div>
+        <div class="card-title">Motor de Decisión</div>
+        <div class="card-file">brain.py</div>
+      </div>
+      <div class="card-chevron">▼</div>
+    </div>
+    <div class="card-body">
+      <div class="card-inner">
+        <div class="card-desc">
+          Combina el bloque de régimen con los indicadores técnicos y envía todo a Claude
+          via la Anthropic API. Parsea el texto de respuesta con regex para extraer señales estructuradas.
+        </div>
+        <div class="prompt-preview"><span class="hl">══ RÉGIMEN DE MERCADO (HMM 4h) ══</span>
+
+<span class="hl">BTC/USDT</span> → <span class="val">BULL_TREND</span>
+  Tendencia alcista sostenida, volatilidad baja
+  Duración:     <span class="val">23 barras · 92h</span> consecutivas
+  Persistencia: <span class="val">95.5%</span> probabilidad de continuar
+  Vol del estado: <span class="val">0.697%</span>/4h
+  Sesgo: Favorable para LONG
+
+<span class="comment">--- BTC/USDT ---</span>
+  Precio:     $<span class="val">94,200</span>
+  RSI (14):   <span class="val">61.4</span>
+  EMA20/50:   94100 / 91200 → <span class="val">ALCISTA</span>
+  Volumen 4h: <span class="val">1.08x</span> promedio</div>
+        <div class="tag-row">
+          <span class="tag">anthropic SDK</span>
+          <span class="tag">claude-sonnet-4</span>
+          <span class="tag">regex</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- executor.py -->
+  <div class="card green" onclick="toggleCard(this)">
+    <div class="card-header">
+      <div class="card-icon">⚡</div>
+      <div>
+        <div class="card-title">Ejecutor de Órdenes</div>
+        <div class="card-file">executor.py · trades.db</div>
+      </div>
+      <div class="card-chevron">▼</div>
+    </div>
+    <div class="card-body">
+      <div class="card-inner">
+        <div class="card-desc">
+          Toma las señales accionables de Claude y las convierte en órdenes reales en Binance Testnet.
+          Antes de ejecutar, verifica todas las reglas de riesgo hardcodeadas en config.py.
+          Cada trade queda registrado en SQLite.
+        </div>
+        <ul class="step-list">
+          <li><span class="step-num">1</span>¿señal.accionable AND convicción ≥ 7? → continuar</li>
+          <li><span class="step-num">2</span>¿posiciones abiertas &lt; MAX_OPEN_POSITIONS (2)? → continuar</li>
+          <li><span class="step-num">3</span>¿pérdida_dia &lt; MAX_DAILY_LOSS_USD ($15)? → continuar</li>
+          <li><span class="step-num">4</span>Calcular quantity = MAX_TRADE_USD ($10) / precio_actual</li>
+          <li><span class="step-num">5</span>exchange.create_order(market, buy/sell) via ccxt</li>
+          <li><span class="step-num">6</span>INSERT INTO trades (symbol, entry, stop, target, ...)</li>
+        </ul>
+        <div class="tag-row">
+          <span class="tag">ccxt</span>
+          <span class="tag">sqlite3</span>
+          <span class="tag">Binance Testnet</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- backtest -->
+  <div class="card blue" onclick="toggleCard(this)">
+    <div class="card-header">
+      <div class="card-icon">📊</div>
+      <div>
+        <div class="card-title">Sistema de Backtest</div>
+        <div class="card-file">backtest/ downloader · simulator · regime_trainer</div>
+      </div>
+      <div class="card-chevron">▼</div>
+    </div>
+    <div class="card-body">
+      <div class="card-inner">
+        <div class="card-desc">
+          Infraestructura offline para descargar datos históricos, entrenar el HMM y
+          validar estrategias sobre datos pasados antes de exponer capital real.
+        </div>
+        <ul class="step-list">
+          <li><span class="step-num">1</span><code>downloader.py</code> — descarga 2 años de velas 1h y 4h de Binance (730 días × 4 pares)</li>
+          <li><span class="step-num">2</span><code>regime_trainer.py</code> — entrena GaussianHMM(n=4) con 10 reinicios aleatorios sobre los datos 4h, etiqueta estados post-hoc por estadísticas, guarda modelo en <code>models/</code></li>
+          <li><span class="step-num">3</span><code>simulator.py</code> — simula la estrategia EMA/RSI sobre datos históricos, reporta Sharpe, win rate, drawdown</li>
+          <li><span class="step-num">4</span><code>optimizer.py</code> — grid search sobre parámetros con validación walk-forward 80/20</li>
+          <li><span class="step-num">5</span><code>report.py</code> — genera HTML con resultados visuales</li>
+        </ul>
+        <div class="tag-row">
+          <span class="tag">hmmlearn</span>
+          <span class="tag">pandas</span>
+          <span class="tag">numpy</span>
+          <span class="tag">walk-forward</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- telegram -->
+  <div class="card amber" onclick="toggleCard(this)">
+    <div class="card-header">
+      <div class="card-icon">📱</div>
+      <div>
+        <div class="card-title">Alertas Telegram</div>
+        <div class="card-file">telegram_alerts.py</div>
+      </div>
+      <div class="card-chevron">▼</div>
+    </div>
+    <div class="card-body">
+      <div class="card-inner">
+        <div class="card-desc">
+          Wrapper sobre la API HTTP de Telegram Bot. Envía notificaciones formateadas
+          en HTML a un chat específico para cada evento del agente.
+        </div>
+        <ul class="step-list">
+          <li><span class="step-num">1</span><b>Startup</b> — al arrancar, confirma pares monitoreados e intervalo</li>
+          <li><span class="step-num">2</span><b>Señal</b> — por cada par: dirección, convicción, entrada, stop, target, tesis</li>
+          <li><span class="step-num">3</span><b>Ejecución</b> — confirma la orden colocada con order ID y cantidad</li>
+          <li><span class="step-num">4</span><b>Resumen 4h</b> — régimen actual de cada par + señales + balance USDT (silent)</li>
+          <li><span class="step-num">5</span><b>Error</b> — cualquier excepción no capturada llega al celular</li>
+        </ul>
+        <div class="tag-row">
+          <span class="tag">requests</span>
+          <span class="tag">Telegram Bot API</span>
+          <span class="tag">HTML parse_mode</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ── Tech stack ── -->
+<p class="section-title">stack tecnológico</p>
+<div class="tech-grid">
+  <div class="tech-item">
+    <div class="t-icon">🐍</div>
+    <div class="t-name">Python 3.12</div>
+    <div class="t-role">runtime principal</div>
+  </div>
+  <div class="tech-item">
+    <div class="t-icon">🧠</div>
+    <div class="t-name">Claude Sonnet</div>
+    <div class="t-role">motor de decisión</div>
+  </div>
+  <div class="tech-item">
+    <div class="t-icon">🎯</div>
+    <div class="t-name">hmmlearn</div>
+    <div class="t-role">GaussianHMM</div>
+  </div>
+  <div class="tech-item">
+    <div class="t-icon">📈</div>
+    <div class="t-name">ccxt</div>
+    <div class="t-role">exchange unificado</div>
+  </div>
+  <div class="tech-item">
+    <div class="t-icon">🗄</div>
+    <div class="t-name">SQLite</div>
+    <div class="t-role">registro de trades</div>
+  </div>
+  <div class="tech-item">
+    <div class="t-icon">🐼</div>
+    <div class="t-name">pandas / numpy</div>
+    <div class="t-role">procesamiento</div>
+  </div>
+  <div class="tech-item">
+    <div class="t-icon">📡</div>
+    <div class="t-name">Binance API</div>
+    <div class="t-role">datos + ejecución</div>
+  </div>
+  <div class="tech-item">
+    <div class="t-icon">📱</div>
+    <div class="t-name">Telegram Bot</div>
+    <div class="t-role">notificaciones</div>
+  </div>
+</div>
+
+</main>
+
+<script>
+  function toggleCard(card) {
+    card.classList.toggle('open');
+  }
+
+  function pulse(node, color) {
+    const box = node.querySelector('.node-box');
+    box.classList.add('active');
+    setTimeout(() => box.classList.remove('active'), 1200);
+  }
+
+  // Auto-open first card on load
+  document.addEventListener('DOMContentLoaded', () => {
+    // slight stagger open for visual interest on first load — none by default
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,899 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Crypto Agent — Mapa del Sistema</title>
+<style>
+  :root {
+    --bg:     #080b14;
+    --card:   #0f1424;
+    --card2:  #161b2e;
+    --border: #1e2640;
+    --blue:   #3b82f6;
+    --purple: #8b5cf6;
+    --green:  #10b981;
+    --amber:  #f59e0b;
+    --red:    #ef4444;
+    --cyan:   #06b6d4;
+    --text:   #e2e8f0;
+    --muted:  #64748b;
+    --dim:    #94a3b8;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    padding: 32px 24px 64px;
+    max-width: 1100px; margin: 0 auto;
+  }
+  h1 { font-size: 1.6rem; font-weight: 800; margin-bottom: 6px; }
+  h1 span { color: var(--purple); }
+  .subtitle { color: var(--muted); font-size: .9rem; margin-bottom: 40px; }
+
+  /* ── Section ── */
+  .section { margin-bottom: 48px; }
+  .section-title {
+    font-size: .7rem; text-transform: uppercase; letter-spacing: .12em;
+    color: var(--muted); margin-bottom: 16px;
+    border-bottom: 1px solid var(--border); padding-bottom: 8px;
+  }
+
+  /* ── Param table ── */
+  .param-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 10px;
+  }
+  .param-card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 12px; padding: 14px 16px;
+  }
+  .param-name  { font-size: .72rem; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+  .param-val   { font-size: 1.1rem; font-weight: 700; margin: 4px 0 2px; }
+  .param-desc  { font-size: .78rem; color: var(--dim); line-height: 1.5; }
+  .pv-blue   { color: var(--blue); }
+  .pv-green  { color: var(--green); }
+  .pv-amber  { color: var(--amber); }
+  .pv-red    { color: var(--red); }
+  .pv-purple { color: var(--purple); }
+  .pv-cyan   { color: var(--cyan); }
+
+  /* ── API keys table ── */
+  .api-table { width: 100%; border-collapse: collapse; }
+  .api-table th {
+    text-align: left; font-size: .7rem; text-transform: uppercase;
+    letter-spacing: .08em; color: var(--muted); padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .api-table td {
+    padding: 10px 12px; font-size: .85rem;
+    border-bottom: 1px solid rgba(30,38,64,.5);
+  }
+  .api-table tr:last-child td { border-bottom: none; }
+  .api-table tr:hover td { background: rgba(255,255,255,.02); }
+  .key-name { font-weight: 600; color: var(--cyan); font-family: monospace; font-size: .82rem; }
+  .key-src   { font-size: .75rem; color: var(--purple); }
+  .required  { color: var(--red); font-size: .7rem; font-weight: 700; }
+  .optional  { color: var(--muted); font-size: .7rem; }
+
+  /* ── Flow ── */
+  .flow { display: flex; flex-direction: column; gap: 0; }
+  .flow-step {
+    display: flex; gap: 16px; align-items: flex-start;
+    position: relative;
+  }
+  .flow-step:not(:last-child)::after {
+    content: '';
+    position: absolute; left: 19px; top: 44px;
+    width: 2px; height: calc(100% - 8px);
+    background: var(--border);
+  }
+  .step-num {
+    width: 40px; height: 40px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 800; font-size: .9rem; flex-shrink: 0;
+    border: 2px solid;
+  }
+  .sn-blue   { background: rgba(59,130,246,.15);  border-color: var(--blue);   color: var(--blue); }
+  .sn-purple { background: rgba(139,92,246,.15);  border-color: var(--purple); color: var(--purple); }
+  .sn-green  { background: rgba(16,185,129,.15);  border-color: var(--green);  color: var(--green); }
+  .sn-amber  { background: rgba(245,158,11,.15);  border-color: var(--amber);  color: var(--amber); }
+  .sn-red    { background: rgba(239,68,68,.15);   border-color: var(--red);    color: var(--red); }
+  .sn-cyan   { background: rgba(6,182,212,.15);   border-color: var(--cyan);   color: var(--cyan); }
+  .step-body { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; flex: 1; margin-bottom: 12px; }
+  .step-title { font-weight: 700; font-size: .95rem; margin-bottom: 6px; }
+  .step-desc  { font-size: .82rem; color: var(--dim); line-height: 1.6; }
+  .step-freq  { display: inline-block; font-size: .7rem; font-weight: 600; padding: 2px 8px; border-radius: 5px; margin-bottom: 8px; }
+  .sf-15  { background: rgba(6,182,212,.1);  color: var(--cyan);   border: 1px solid rgba(6,182,212,.2); }
+  .sf-4h  { background: rgba(139,92,246,.1); color: var(--purple); border: 1px solid rgba(139,92,246,.2); }
+  .sf-ev  { background: rgba(245,158,11,.1); color: var(--amber);  border: 1px solid rgba(245,158,11,.2); }
+
+  /* ── Decision tree ── */
+  .tree { margin-top: 8px; }
+  .tree-branch {
+    margin-left: 0; margin-top: 6px; padding: 8px 12px;
+    border-left: 3px solid var(--border); border-radius: 0 8px 8px 0;
+    background: var(--card2); font-size: .8rem; line-height: 1.5;
+  }
+  .tb-green { border-color: var(--green); }
+  .tb-red   { border-color: var(--red); }
+  .tb-amber { border-color: var(--amber); }
+  .tb-blue  { border-color: var(--blue); }
+  .tb-muted { border-color: var(--border); }
+  .cond { color: var(--muted); font-size: .75rem; }
+  .outcome { font-weight: 700; }
+  .out-green  { color: var(--green); }
+  .out-red    { color: var(--red); }
+  .out-amber  { color: var(--amber); }
+  .out-blue   { color: var(--blue); }
+  .out-muted  { color: var(--muted); }
+
+  /* ── Scenario grid ── */
+  .scenario-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
+  .scenario-card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 12px; overflow: hidden;
+  }
+  .sc-header {
+    padding: 12px 16px; font-weight: 700; font-size: .9rem;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .sc-body { padding: 12px 16px; font-size: .8rem; color: var(--dim); line-height: 1.7; }
+  .sc-body b { color: var(--text); }
+  .sc-bull { background: rgba(16,185,129,.1);  border-bottom: 1px solid rgba(16,185,129,.2); }
+  .sc-bear { background: rgba(239,68,68,.08);  border-bottom: 1px solid rgba(239,68,68,.15); }
+  .sc-side { background: rgba(100,116,139,.1); border-bottom: 1px solid rgba(100,116,139,.2); }
+  .sc-rev  { background: rgba(245,158,11,.08); border-bottom: 1px solid rgba(245,158,11,.15); }
+
+  /* ── Exit table ── */
+  .exit-table { width: 100%; border-collapse: collapse; }
+  .exit-table th {
+    text-align: left; font-size: .7rem; text-transform: uppercase;
+    letter-spacing: .08em; color: var(--muted); padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .exit-table td { padding: 10px 12px; font-size: .82rem; border-bottom: 1px solid rgba(30,38,64,.5); vertical-align: top; }
+  .exit-table tr:last-child td { border-bottom: none; }
+  .exit-type { font-weight: 700; }
+
+  /* ── HMM diagram ── */
+  .hmm-wrap { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 24px; }
+  .hmm-states { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; max-width: 560px; margin: 0 auto 24px; }
+  .hmm-state {
+    border-radius: 12px; padding: 14px 16px; text-align: center;
+    border: 2px solid;
+  }
+  .hs-bull { background: rgba(16,185,129,.08);  border-color: rgba(16,185,129,.3); }
+  .hs-bear { background: rgba(239,68,68,.08);   border-color: rgba(239,68,68,.3); }
+  .hs-side { background: rgba(100,116,139,.08); border-color: rgba(100,116,139,.3); }
+  .hs-rev  { background: rgba(245,158,11,.08);  border-color: rgba(245,158,11,.3); }
+  .hs-name { font-weight: 800; font-size: .95rem; }
+  .hs-bull .hs-name { color: #6ee7b7; }
+  .hs-bear .hs-name { color: #fca5a5; }
+  .hs-side .hs-name { color: var(--dim); }
+  .hs-rev  .hs-name { color: #fcd34d; }
+  .hs-stat { font-size: .73rem; color: var(--muted); margin-top: 4px; }
+  .hs-ret  { font-size: .82rem; font-weight: 600; margin-top: 6px; }
+  .hmm-features { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+  .feat-pill {
+    background: var(--card2); border: 1px solid var(--border);
+    border-radius: 6px; padding: 4px 10px; font-size: .75rem; color: var(--dim);
+  }
+  .feat-pill b { color: var(--text); }
+  .hmm-note { text-align: center; font-size: .78rem; color: var(--muted); margin-top: 16px; }
+
+  /* ── Timeline ── */
+  .timeline { display: flex; align-items: center; gap: 0; overflow-x: auto; padding-bottom: 8px; }
+  .tl-item  { display: flex; flex-direction: column; align-items: center; min-width: 100px; }
+  .tl-dot   { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
+  .tl-line  { height: 2px; flex: 1; min-width: 40px; background: var(--border); }
+  .tl-label { font-size: .7rem; color: var(--muted); margin-top: 6px; text-align: center; }
+  .tl-sub   { font-size: .65rem; color: rgba(100,116,139,.6); margin-top: 2px; text-align: center; }
+  .tl-row   { display: flex; align-items: center; width: 100%; }
+
+  /* ── Legend ── */
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 16px; }
+  .leg-item { display: flex; align-items: center; gap: 6px; font-size: .75rem; color: var(--dim); }
+  .leg-dot  { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+
+  /* ── Callout ── */
+  .callout {
+    padding: 12px 16px; border-radius: 10px; font-size: .82rem;
+    line-height: 1.6; margin-top: 12px;
+  }
+  .callout-amber { background: rgba(245,158,11,.08); border: 1px solid rgba(245,158,11,.2); color: #fcd34d; }
+  .callout-blue  { background: rgba(59,130,246,.08); border: 1px solid rgba(59,130,246,.2);  color: #93c5fd; }
+  .callout-green { background: rgba(16,185,129,.08); border: 1px solid rgba(16,185,129,.2);  color: #6ee7b7; }
+
+  .tag {
+    display: inline-block; font-size: .65rem; font-weight: 700;
+    padding: 1px 6px; border-radius: 4px; margin-right: 4px; vertical-align: middle;
+  }
+  .tag-api { background: rgba(139,92,246,.2); color: var(--purple); }
+  .tag-db  { background: rgba(6,182,212,.15); color: var(--cyan); }
+  .tag-mem { background: rgba(245,158,11,.15); color: var(--amber); }
+</style>
+</head>
+<body>
+
+<h1>Crypto<span>Agent</span> — Mapa del Sistema</h1>
+<p class="subtitle">Flujo completo · Parámetros · Escenarios · Salidas posibles</p>
+
+<!-- ════════════════════════════════════════════════════════
+     1. PARÁMETROS
+═════════════════════════════════════════════════════════ -->
+<div class="section">
+  <div class="section-title">1 · Parámetros configurables</div>
+  <div class="param-grid">
+
+    <div class="param-card">
+      <div class="param-name">SYMBOLS</div>
+      <div class="param-val pv-blue">ETH · SOL · BTC</div>
+      <div class="param-desc">Pares monitoreados. XRP fue removido por Sharpe negativo en backtest (−0.53). Cada par es independiente.</div>
+    </div>
+
+    <div class="param-card">
+      <div class="param-name">MONITOR_INTERVAL_MINUTES</div>
+      <div class="param-val pv-cyan">15 min</div>
+      <div class="param-desc">Frecuencia del ciclo de monitoreo. Cada 15 min se chequean precios, stops y régimen. No llama a Claude.</div>
+    </div>
+
+    <div class="param-card">
+      <div class="param-name">ANALYSIS_INTERVAL_MINUTES</div>
+      <div class="param-val pv-purple">60 min (testnet) · 240 min (prod)</div>
+      <div class="param-desc">Cada cuánto Claude analiza un par libre. Se resetea si el par cierra una posición.</div>
+    </div>
+
+    <div class="param-card">
+      <div class="param-name">MAX_TRADE_USD</div>
+      <div class="param-val pv-amber">$10</div>
+      <div class="param-desc">Máximo en USD por operación. La cantidad en cripto = 10 / precio_actual.</div>
+    </div>
+
+    <div class="param-card">
+      <div class="param-name">STOP_LOSS_PCT</div>
+      <div class="param-val pv-red">4%</div>
+      <div class="param-desc">Stop fijo desde la entrada. Pérdida máxima por trade: $0.40 (4% de $10).</div>
+    </div>
+
+    <div class="param-card">
+      <div class="param-name">TAKE_PROFIT (Claude)</div>
+      <div class="param-val pv-green">~8% (ratio 1:2)</div>
+      <div class="param-desc">Claude sugiere el target. Ratio riesgo/recompensa 1:2 → rentable con win rate > 33%.</div>
+    </div>
+
+    <div class="param-card">
+      <div class="param-name">MAX_DAILY_LOSS_USD</div>
+      <div class="param-val pv-red">$15</div>
+      <div class="param-desc">Si las pérdidas del día acumulan $15, el agente se pausa hasta medianoche.</div>
+    </div>
+
+    <div class="param-card">
+      <div class="param-name">MIN_SIGNAL_CONVICTION</div>
+      <div class="param-val pv-purple">7 / 10</div>
+      <div class="param-desc">Claude puntúa 1–10. Solo se ejecutan señales con puntaje ≥ 7. Filtra entradas débiles.</div>
+    </div>
+
+    <div class="param-card">
+      <div class="param-name">BINANCE_TESTNET</div>
+      <div class="param-val pv-amber">true → false (producción)</div>
+      <div class="param-desc">En true usa el sandbox de Binance. Las órdenes son simuladas, sin dinero real.</div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     2. API KEYS
+═════════════════════════════════════════════════════════ -->
+<div class="section">
+  <div class="section-title">2 · Variables de entorno requeridas (.env / Railway)</div>
+  <table class="api-table">
+    <thead>
+      <tr>
+        <th>Variable</th>
+        <th>Para qué sirve</th>
+        <th>Dónde obtenerla</th>
+        <th>Req.</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><span class="key-name">BINANCE_API_KEY</span><br><span class="key-name">BINANCE_API_SECRET</span></td>
+        <td>Ejecutar órdenes en Binance (comprar/vender)</td>
+        <td><span class="key-src">binance.com → API Management</span></td>
+        <td><span class="required">REQUERIDO</span></td>
+      </tr>
+      <tr>
+        <td><span class="key-name">ANTHROPIC_API_KEY</span></td>
+        <td>Llamar a Claude para analizar el mercado</td>
+        <td><span class="key-src">console.anthropic.com</span></td>
+        <td><span class="required">REQUERIDO</span></td>
+      </tr>
+      <tr>
+        <td><span class="key-name">TELEGRAM_TOKEN</span><br><span class="key-name">TELEGRAM_CHAT_ID</span></td>
+        <td>Recibir notificaciones de trades y errores</td>
+        <td><span class="key-src">@BotFather en Telegram</span></td>
+        <td><span class="required">REQUERIDO</span></td>
+      </tr>
+      <tr>
+        <td><span class="key-name">GITHUB_GIST_TOKEN</span><br><span class="key-name">GITHUB_GIST_ID</span></td>
+        <td>Publicar estado del dashboard en la nube</td>
+        <td><span class="key-src">github.com → Settings → Tokens</span></td>
+        <td><span class="optional">opcional</span></td>
+      </tr>
+      <tr>
+        <td><span class="key-name">AGENT_API_TOKEN</span></td>
+        <td>Proteger el endpoint /api/close del dashboard</td>
+        <td><span class="key-src">Cualquier string secreto que elijas</span></td>
+        <td><span class="optional">opcional</span></td>
+      </tr>
+      <tr>
+        <td><span class="key-name">BINANCE_TESTNET</span></td>
+        <td>true = sandbox, false = dinero real</td>
+        <td><span class="key-src">Setear manualmente</span></td>
+        <td><span class="optional">default: true</span></td>
+      </tr>
+      <tr>
+        <td><span class="key-name">MONITOR_INTERVAL_MINUTES</span><br><span class="key-name">ANALYSIS_INTERVAL_MINUTES</span></td>
+        <td>Controlar frecuencia de ciclos sin redeploy</td>
+        <td><span class="key-src">Setear manualmente</span></td>
+        <td><span class="optional">default: 15 / 240</span></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     3. ARQUITECTURA
+═════════════════════════════════════════════════════════ -->
+<div class="section">
+  <div class="section-title">3 · Arquitectura de módulos</div>
+  <div style="background:var(--card);border:1px solid var(--border);border-radius:14px;padding:24px;">
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;">
+
+      <div style="background:var(--card2);border-radius:10px;padding:12px 14px;">
+        <div style="color:var(--purple);font-weight:700;font-size:.85rem;margin-bottom:4px;">main.py</div>
+        <div style="font-size:.75rem;color:var(--dim);line-height:1.5;">Orquestador central. Loop principal, ciclos de monitor y análisis, servidor HTTP.</div>
+      </div>
+
+      <div style="background:var(--card2);border-radius:10px;padding:12px 14px;">
+        <div style="color:var(--blue);font-weight:700;font-size:.85rem;margin-bottom:4px;">data.py</div>
+        <div style="font-size:.75rem;color:var(--dim);line-height:1.5;">Fetch de precios 4h desde Binance. Calcula RSI, EMA20/50, tendencia, Fear&Greed.</div>
+      </div>
+
+      <div style="background:var(--card2);border-radius:10px;padding:12px 14px;">
+        <div style="color:var(--amber);font-weight:700;font-size:.85rem;margin-bottom:4px;">regime.py</div>
+        <div style="font-size:.75rem;color:var(--dim);line-height:1.5;">Carga modelo HMM (.pkl), clasifica el régimen actual de cada par. Retorna régimen, horas, persistencia.</div>
+      </div>
+
+      <div style="background:var(--card2);border-radius:10px;padding:12px 14px;">
+        <div style="color:var(--purple);font-weight:700;font-size:.85rem;margin-bottom:4px;">brain.py</div>
+        <div style="font-size:.75rem;color:var(--dim);line-height:1.5;">Llama a Claude API. Recibe contexto de mercado + régimen. Retorna señal, dirección, convicción, tesis.</div>
+      </div>
+
+      <div style="background:var(--card2);border-radius:10px;padding:12px 14px;">
+        <div style="color:var(--green);font-weight:700;font-size:.85rem;margin-bottom:4px;">executor.py</div>
+        <div style="font-size:.75rem;color:var(--dim);line-height:1.5;">Órdenes en Binance vía ccxt. DB SQLite de trades. Check de stop/target cada ciclo.</div>
+      </div>
+
+      <div style="background:var(--card2);border-radius:10px;padding:12px 14px;">
+        <div style="color:var(--cyan);font-weight:700;font-size:.85rem;margin-bottom:4px;">telegram_alerts.py</div>
+        <div style="font-size:.75rem;color:var(--dim);line-height:1.5;">Notificaciones: apertura, cierre, errores, resumen periódico.</div>
+      </div>
+
+      <div style="background:var(--card2);border-radius:10px;padding:12px 14px;">
+        <div style="color:var(--amber);font-weight:700;font-size:.85rem;margin-bottom:4px;">models/</div>
+        <div style="font-size:.75rem;color:var(--dim);line-height:1.5;">Archivos .pkl del HMM entrenados por par (BTCUSDT.pkl, ETHUSDT.pkl, SOLUSDT.pkl).</div>
+      </div>
+
+      <div style="background:var(--card2);border-radius:10px;padding:12px 14px;">
+        <div style="color:var(--dim);font-weight:700;font-size:.85rem;margin-bottom:4px;">trades.db</div>
+        <div style="font-size:.75rem;color:var(--dim);line-height:1.5;">SQLite local. Tabla trades: entrada, salida, PnL, estado. Persiste entre reinicios.</div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     4. FLUJO PRINCIPAL
+═════════════════════════════════════════════════════════ -->
+<div class="section">
+  <div class="section-title">4 · Flujo principal — ciclo completo</div>
+
+  <div class="flow">
+
+    <!-- Paso 0 -->
+    <div class="flow-step">
+      <div class="step-num sn-cyan">0</div>
+      <div class="step-body">
+        <span class="step-freq sf-ev">Al arrancar</span>
+        <div class="step-title">Inicialización</div>
+        <div class="step-desc">
+          Carga variables de entorno → init_db() crea/verifica trades.db → arranca thread del servidor HTTP en puerto configurado → envía mensaje de inicio por Telegram.
+        </div>
+      </div>
+    </div>
+
+    <!-- Paso 1 -->
+    <div class="flow-step">
+      <div class="step-num sn-cyan">1</div>
+      <div class="step-body">
+        <span class="step-freq sf-15">Cada 15 min</span>
+        <div class="step-title">Fetch de mercado</div>
+        <div class="step-desc">
+          <span class="tag tag-api">Binance API</span>
+          Descarga las últimas 100 velas de 4h para cada par. Calcula: precio actual, RSI(14), EMA20, EMA50, tendencia (EMA20 &gt; EMA50), volumen relativo, cambio 4h.<br>
+          También obtiene el Fear &amp; Greed Index del día desde alternative.me.<br><br>
+          <b>Si falla:</b> loguea error, notifica Telegram, aborta el ciclo. Reintenta en 15 min.
+        </div>
+      </div>
+    </div>
+
+    <!-- Paso 2 -->
+    <div class="flow-step">
+      <div class="step-num sn-red">2</div>
+      <div class="step-body">
+        <span class="step-freq sf-15">Cada 15 min</span>
+        <div class="step-title">Monitor de posiciones abiertas (SL / TP)</div>
+        <div class="step-desc">
+          <span class="tag tag-db">SQLite</span>
+          Para cada trade con status=OPEN compara precio actual vs stop_loss y take_profit.
+        </div>
+        <div class="tree">
+          <div class="tree-branch tb-red">
+            <span class="cond">LONG y precio ≤ stop_loss →</span><br>
+            <span class="outcome out-red">LOSS</span> — cierra en DB, registra PnL negativo, suma a daily_loss_usd, notifica Telegram, resetea timer de análisis del par.
+          </div>
+          <div class="tree-branch tb-green">
+            <span class="cond">LONG y precio ≥ take_profit →</span><br>
+            <span class="outcome out-green">WIN</span> — cierra en DB, registra PnL positivo, notifica Telegram, resetea timer.
+          </div>
+          <div class="tree-branch tb-red">
+            <span class="cond">SHORT y precio ≥ stop_loss →</span><br>
+            <span class="outcome out-red">LOSS</span> — igual que arriba.
+          </div>
+          <div class="tree-branch tb-green">
+            <span class="cond">SHORT y precio ≤ take_profit →</span><br>
+            <span class="outcome out-green">WIN</span> — igual que arriba.
+          </div>
+          <div class="tree-branch tb-muted">
+            <span class="cond">Precio entre stop y target →</span><br>
+            <span class="outcome out-muted">Sin acción</span> — continúa monitoreando.
+          </div>
+        </div>
+        <div class="callout callout-red" style="background:rgba(239,68,68,.06);border:1px solid rgba(239,68,68,.15);color:#fca5a5;margin-top:10px;font-size:.78rem;padding:10px 12px;border-radius:8px;">
+          Si daily_loss_usd ≥ $15 → estado halted=true. El agente no abre nuevas posiciones hasta medianoche.
+        </div>
+      </div>
+    </div>
+
+    <!-- Paso 3 -->
+    <div class="flow-step">
+      <div class="step-num sn-amber">3</div>
+      <div class="step-body">
+        <span class="step-freq sf-15">Cada 15 min</span>
+        <div class="step-title">Clasificación de régimen HMM</div>
+        <div class="step-desc">
+          <span class="tag tag-mem">modelo .pkl</span>
+          Para cada par: descarga 200 velas 4h de la API pública de Binance (sin auth) → calcula 5 features → aplica modelo GaussianHMM pre-entrenado → algoritmo de Viterbi predice el estado actual → etiqueta el estado como régimen.<br><br>
+          Retorna por par: <b>régimen, horas consecutivas, probabilidad de persistencia, régimen anterior.</b>
+        </div>
+        <div class="callout callout-amber">
+          Si el modelo .pkl no existe para un par, el régimen queda como UNKNOWN y se omite del contexto de Claude. No bloquea el ciclo.
+        </div>
+      </div>
+    </div>
+
+    <!-- Paso 4 -->
+    <div class="flow-step">
+      <div class="step-num sn-red">4</div>
+      <div class="step-body">
+        <span class="step-freq sf-15">Cada 15 min</span>
+        <div class="step-title">Salidas por cambio de régimen (sin Claude)</div>
+        <div class="step-desc">
+          Revisa cada posición abierta contra el régimen actual. Si la tesis de entrada ya no aplica, cierra al mercado inmediatamente, sin consumir tokens.
+        </div>
+        <div class="tree">
+          <div class="tree-branch tb-red">
+            <span class="cond">Posición LONG + régimen ahora es BEAR_TREND →</span><br>
+            <span class="outcome out-red">Cierre de mercado inmediato</span> — orden sell al precio actual.
+          </div>
+          <div class="tree-branch tb-red">
+            <span class="cond">Posición SHORT + régimen ahora es BULL_TREND →</span><br>
+            <span class="outcome out-red">Cierre de mercado inmediato</span> — orden buy al precio actual.
+          </div>
+          <div class="tree-branch tb-muted">
+            <span class="cond">LONG + SIDEWAYS/REVERSAL, SHORT + SIDEWAYS/REVERSAL →</span><br>
+            <span class="outcome out-muted">Sin acción</span> — esos regímenes son ambiguos, no se fuerza salida.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Paso 5 -->
+    <div class="flow-step">
+      <div class="step-num sn-purple">5</div>
+      <div class="step-body">
+        <span class="step-freq sf-4h">Cada 1h/4h por par</span>
+        <div class="step-title">Análisis Claude (solo pares libres y con timer vencido)</div>
+        <div class="step-desc">
+          <span class="tag tag-api">Claude API</span>
+          <b>Condiciones para llamar a Claude:</b><br>
+          ① El par no tiene posición abierta<br>
+          ② Pasaron ANALYSIS_INTERVAL_MINUTES desde el último análisis<br>
+          ③ El agente no está en estado halted<br><br>
+          Claude recibe: contexto de mercado (precio, RSI, EMA, tendencia, volumen) + contexto de régimen HMM (régimen, horas, persistencia, régimen anterior) + Fear &amp; Greed + instrucciones del system prompt.<br><br>
+          Claude devuelve por par: <b>dirección</b> (LONG/SHORT/NEUTRAL), <b>convicción</b> (1–10), <b>stop sugerido</b>, <b>target sugerido</b>, <b>tesis</b>.
+        </div>
+        <div class="tree">
+          <div class="tree-branch tb-muted">
+            <span class="cond">Par con posición abierta →</span>
+            <span class="outcome out-muted">Skip Claude</span> — 0 tokens consumidos.
+          </div>
+          <div class="tree-branch tb-muted">
+            <span class="cond">Análisis reciente (timer no vencido) →</span>
+            <span class="outcome out-muted">Skip Claude</span> — muestra tiempo restante en log.
+          </div>
+          <div class="tree-branch tb-muted">
+            <span class="cond">Todos los pares ocupados →</span>
+            <span class="outcome out-muted">Skip ciclo completo de análisis</span> — 0 tokens.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Paso 6 -->
+    <div class="flow-step">
+      <div class="step-num sn-green">6</div>
+      <div class="step-body">
+        <span class="step-freq sf-4h">Cuando Claude responde</span>
+        <div class="step-title">Ejecución de señales</div>
+        <div class="step-desc">
+          Para cada señal recibida de Claude:
+        </div>
+        <div class="tree">
+          <div class="tree-branch tb-muted">
+            <span class="cond">Dirección = NEUTRAL →</span>
+            <span class="outcome out-muted">No hacer nada</span> — contador "descartados" +1.
+          </div>
+          <div class="tree-branch tb-muted">
+            <span class="cond">Convicción &lt; 7 →</span>
+            <span class="outcome out-muted">No ejecutar</span> — señal débil.
+          </div>
+          <div class="tree-branch tb-muted">
+            <span class="cond">Ya hay posición abierta en el par →</span>
+            <span class="outcome out-muted">No ejecutar</span> — máx 1 por par.
+          </div>
+          <div class="tree-branch tb-green">
+            <span class="cond">LONG/SHORT + convicción ≥ 7 + par libre →</span>
+            <span class="outcome out-green">Ejecutar orden de mercado en Binance</span><br>
+            Calcula quantity = $10 / precio. Guarda trade en SQLite. Notifica Telegram.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Paso 7 -->
+    <div class="flow-step">
+      <div class="step-num sn-blue">7</div>
+      <div class="step-body">
+        <span class="step-freq sf-15">Cada 15 min</span>
+        <div class="step-title">Dashboard &amp; Telegram</div>
+        <div class="step-desc">
+          Escribe dashboard_state.json con todo el estado → sube el JSON a GitHub Gist (si está configurado) → el dashboard PWA lo lee cada 60s.<br><br>
+          Telegram solo recibe resumen cada 3 ciclos de análisis (~3h/12h) o cuando hay un trade cerrado. No spamea.
+        </div>
+      </div>
+    </div>
+
+    <!-- Paso 8 -->
+    <div class="flow-step">
+      <div class="step-num sn-cyan">8</div>
+      <div class="step-body">
+        <span class="step-freq sf-ev">Siempre disponible</span>
+        <div class="step-title">Cierre manual desde dashboard</div>
+        <div class="step-desc">
+          El servidor HTTP acepta <code style="background:var(--card2);padding:1px 5px;border-radius:4px;font-size:.78rem;">POST /api/close</code> con trade_id + token. Ejecuta cierre de mercado, notifica Telegram, resetea timer del par.
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     5. HMM — MODELO DE REGÍMENES
+═════════════════════════════════════════════════════════ -->
+<div class="section">
+  <div class="section-title">5 · HMM — Clasificador de régimen de mercado</div>
+  <div class="hmm-wrap">
+
+    <div style="text-align:center;font-size:.8rem;color:var(--muted);margin-bottom:20px;">
+      GaussianHMM · 4 estados · Entrenado por par · Viterbi para predicción
+    </div>
+
+    <div class="hmm-states">
+      <div class="hmm-state hs-bull">
+        <div class="hs-name">📈 BULL_TREND</div>
+        <div class="hs-ret" style="color:#6ee7b7">Retorno medio positivo</div>
+        <div class="hs-stat">BTC histórico: ~23% del tiempo</div>
+        <div class="hs-stat">Baja volatilidad relativa</div>
+        <div style="margin-top:8px;font-size:.75rem;color:var(--dim)">→ Claude busca LONGs</div>
+      </div>
+      <div class="hmm-state hs-bear">
+        <div class="hs-name">📉 BEAR_TREND</div>
+        <div class="hs-ret" style="color:#fca5a5">Retorno medio negativo</div>
+        <div class="hs-stat">BTC histórico: ~17% del tiempo</div>
+        <div class="hs-stat">Alta volatilidad</div>
+        <div style="margin-top:8px;font-size:.75rem;color:var(--dim)">→ Claude puede buscar SHORTs</div>
+      </div>
+      <div class="hmm-state hs-side">
+        <div class="hs-name">➡️ SIDEWAYS</div>
+        <div class="hs-ret" style="color:var(--dim)">Retorno ~0</div>
+        <div class="hs-stat">BTC histórico: ~33% del tiempo</div>
+        <div class="hs-stat">Baja volatilidad</div>
+        <div style="margin-top:8px;font-size:.75rem;color:var(--dim)">→ Claude tiende a NEUTRAL</div>
+      </div>
+      <div class="hmm-state hs-rev">
+        <div class="hs-name">🔄 REVERSAL</div>
+        <div class="hs-ret" style="color:#fcd34d">Retorno positivo moderado</div>
+        <div class="hs-stat">BTC histórico: ~26% del tiempo</div>
+        <div class="hs-stat">Alta volatilidad</div>
+        <div style="margin-top:8px;font-size:.75rem;color:var(--dim)">→ Claude puede entrar con cautela</div>
+      </div>
+    </div>
+
+    <div style="text-align:center;margin-bottom:12px;font-size:.78rem;color:var(--muted);">5 features de entrada al modelo:</div>
+    <div class="hmm-features">
+      <div class="feat-pill"><b>log_return</b> retorno logarítmico</div>
+      <div class="feat-pill"><b>vol_rolling_20</b> volatilidad 20 velas</div>
+      <div class="feat-pill"><b>vol_ratio</b> volumen vs media 20v</div>
+      <div class="feat-pill"><b>RSI_centered</b> RSI normalizado −1/+1</div>
+      <div class="feat-pill"><b>EMA50_slope</b> pendiente EMA50</div>
+    </div>
+    <div class="hmm-note">
+      El régimen se inyecta en el prompt de Claude como contexto — no como regla rígida.<br>
+      Claude razona sobre él y puede ignorarlo si otros indicadores contradicen.
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     6. ESCENARIOS POR SÍMBOLO
+═════════════════════════════════════════════════════════ -->
+<div class="section">
+  <div class="section-title">6 · Escenarios esperables por par (cada ciclo de análisis)</div>
+  <div class="scenario-grid">
+
+    <div class="scenario-card">
+      <div class="sc-header sc-bull">📈 BULL_TREND</div>
+      <div class="sc-body">
+        <b>Contexto:</b> EMA20 > EMA50, RSI entre 40–65, HMM lleva muchas horas en bull, persistencia alta.<br><br>
+        <b>Claude esperado:</b> LONG con convicción 7–9. Target +8%, stop −4%.<br><br>
+        <b>Tesis típica:</b> "Tendencia alcista confirmada por HMM (X horas, Y% persistencia). RSI no sobrecomprado. EMA alineadas."<br><br>
+        <b>Salidas posibles:</b><br>
+        ✅ Target (+8%) → WIN<br>
+        ❌ Stop (−4%) → LOSS<br>
+        🔄 Régimen cambia a BEAR → cierre automático (puede ser WIN o LOSS)
+      </div>
+    </div>
+
+    <div class="scenario-card">
+      <div class="sc-header sc-bear">📉 BEAR_TREND</div>
+      <div class="sc-body">
+        <b>Contexto:</b> EMA20 &lt; EMA50, RSI entre 30–50, HMM en bear sostenido.<br><br>
+        <b>Claude esperado:</b> SHORT o NEUTRAL. Si F&G &lt; 20 (miedo extremo), puede preferir no entrar SHORT.<br><br>
+        <b>Tesis típica:</b> "Régimen bajista. Tendencia bajista confirmada. RSI no sobrevendido aún."<br><br>
+        <b>Salidas posibles:</b><br>
+        ✅ Target SHORT (precio baja 8%) → WIN<br>
+        ❌ Stop SHORT (precio sube 4%) → LOSS<br>
+        🔄 Régimen cambia a BULL → cierre automático de SHORT
+      </div>
+    </div>
+
+    <div class="scenario-card">
+      <div class="sc-header sc-side">➡️ SIDEWAYS</div>
+      <div class="sc-body">
+        <b>Contexto:</b> EMAs cruzadas o muy juntas, RSI alrededor de 50, sin dirección clara.<br><br>
+        <b>Claude esperado:</b> Principalmente NEUTRAL. Este régimen no favorece ninguna dirección.<br><br>
+        <b>Resultado más probable:</b> 0 tokens gastados en ejecución. El par se "descarta" y se vuelve a analizar en el próximo ciclo de 1h/4h.<br><br>
+        <b>Excepción:</b> Si RSI muy bajo (&lt;30) + F&G &lt; 20, Claude puede ver oportunidad contraria.
+      </div>
+    </div>
+
+    <div class="scenario-card">
+      <div class="sc-header sc-rev">🔄 REVERSAL</div>
+      <div class="sc-body">
+        <b>Contexto:</b> Alta volatilidad, cambio reciente de régimen (ej: venía de BEAR). RSI puede estar en extremos.<br><br>
+        <b>Claude esperado:</b> Variable. Puede ver LONG si detecta rebote, con menor convicción.<br><br>
+        <b>Primera señal real:</b> Claude citó "REVERSAL consolidado (23 barras, 93.6% persistencia)" como tesis de entrada y condición de invalidación. Convicción 8/10.<br><br>
+        <b>Salidas posibles:</b><br>
+        ✅ Si la reversión se confirma → WIN<br>
+        ❌ Si continúa bajando → LOSS por stop<br>
+        🔄 Cambia a BEAR_TREND → cierre automático
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     7. TABLA DE SALIDAS
+═════════════════════════════════════════════════════════ -->
+<div class="section">
+  <div class="section-title">7 · Todas las salidas posibles de una posición</div>
+  <table class="exit-table">
+    <thead>
+      <tr>
+        <th>Tipo de salida</th>
+        <th>Condición</th>
+        <th>Resultado</th>
+        <th>PnL aprox.</th>
+        <th>Cómo se ejecuta</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><span class="exit-type" style="color:var(--green)">Take Profit</span></td>
+        <td>Precio alcanza el target (+8%)</td>
+        <td style="color:var(--green)">WIN</td>
+        <td>+$0.80</td>
+        <td>Detección en ciclo de monitoreo (15min). Sin Claude.</td>
+      </tr>
+      <tr>
+        <td><span class="exit-type" style="color:var(--red)">Stop Loss</span></td>
+        <td>Precio alcanza el stop (−4%)</td>
+        <td style="color:var(--red)">LOSS</td>
+        <td>−$0.40</td>
+        <td>Detección en ciclo de monitoreo (15min). Sin Claude.</td>
+      </tr>
+      <tr>
+        <td><span class="exit-type" style="color:var(--amber)">Regime Exit</span></td>
+        <td>LONG + BEAR_TREND, o SHORT + BULL_TREND</td>
+        <td>WIN o LOSS según precio</td>
+        <td>Variable</td>
+        <td>Cierre de mercado automático cada 15min. Sin Claude.</td>
+      </tr>
+      <tr>
+        <td><span class="exit-type" style="color:var(--purple)">Cierre manual</span></td>
+        <td>Botón en dashboard</td>
+        <td>WIN o LOSS según precio</td>
+        <td>Variable</td>
+        <td>POST /api/close → orden de mercado inmediata.</td>
+      </tr>
+      <tr>
+        <td><span class="exit-type" style="color:var(--muted)">Daily halt</span></td>
+        <td>Pérdida acumulada ≥ $15 en el día</td>
+        <td>—</td>
+        <td>—</td>
+        <td>No cierra posiciones, solo bloquea nuevas entradas hasta medianoche.</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     8. TIMELINE DE UN CICLO
+═════════════════════════════════════════════════════════ -->
+<div class="section">
+  <div class="section-title">8 · Timeline típico — un día de operación</div>
+  <div style="background:var(--card);border:1px solid var(--border);border-radius:14px;padding:24px;overflow-x:auto;">
+
+    <div style="display:flex;gap:0;align-items:flex-start;min-width:800px;">
+
+      <div style="display:flex;flex-direction:column;align-items:center;min-width:110px;">
+        <div style="width:14px;height:14px;border-radius:50%;background:var(--cyan);flex-shrink:0;"></div>
+        <div style="width:2px;height:60px;background:var(--border);"></div>
+        <div style="font-size:.72rem;color:var(--cyan);margin-top:6px;text-align:center;font-weight:600;">00:00</div>
+        <div style="font-size:.68rem;color:var(--muted);text-align:center;">Arranque<br>o reset diario</div>
+      </div>
+
+      <div style="height:2px;background:var(--border);flex:1;margin-top:6px;"></div>
+
+      <div style="display:flex;flex-direction:column;align-items:center;min-width:110px;">
+        <div style="width:14px;height:14px;border-radius:50%;background:var(--purple);flex-shrink:0;"></div>
+        <div style="width:2px;height:60px;background:var(--border);"></div>
+        <div style="font-size:.72rem;color:var(--purple);margin-top:6px;text-align:center;font-weight:600;">00:00</div>
+        <div style="font-size:.68rem;color:var(--muted);text-align:center;">1er análisis<br>Claude (3 pares)</div>
+      </div>
+
+      <div style="height:2px;background:var(--border);flex:1;margin-top:6px;"></div>
+
+      <div style="display:flex;flex-direction:column;align-items:center;min-width:110px;">
+        <div style="width:14px;height:14px;border-radius:50%;background:var(--cyan);flex-shrink:0;"></div>
+        <div style="width:2px;height:60px;background:var(--border);"></div>
+        <div style="font-size:.72rem;color:var(--cyan);margin-top:6px;text-align:center;font-weight:600;">00:15</div>
+        <div style="font-size:.68rem;color:var(--muted);text-align:center;">Monitoreo<br>(solo SL/TP)</div>
+      </div>
+
+      <div style="height:2px;background:var(--border);flex:1;margin-top:6px;"></div>
+
+      <div style="display:flex;flex-direction:column;align-items:center;min-width:110px;">
+        <div style="width:14px;height:14px;border-radius:50%;background:var(--green);flex-shrink:0;"></div>
+        <div style="width:2px;height:60px;background:var(--border);"></div>
+        <div style="font-size:.72rem;color:var(--green);margin-top:6px;text-align:center;font-weight:600;">00:20</div>
+        <div style="font-size:.68rem;color:var(--muted);text-align:center;">SOL entra<br>LONG ($10)</div>
+      </div>
+
+      <div style="height:2px;background:var(--border);flex:1;margin-top:6px;"></div>
+
+      <div style="display:flex;flex-direction:column;align-items:center;min-width:110px;">
+        <div style="width:14px;height:14px;border-radius:50%;background:var(--cyan);flex-shrink:0;"></div>
+        <div style="width:2px;height:60px;background:var(--border);"></div>
+        <div style="font-size:.72rem;color:var(--cyan);margin-top:6px;text-align:center;font-weight:600;">01:00</div>
+        <div style="font-size:.68rem;color:var(--muted);text-align:center;">2do análisis<br>ETH+BTC<br>(SOL skip)</div>
+      </div>
+
+      <div style="height:2px;background:var(--border);flex:1;margin-top:6px;"></div>
+
+      <div style="display:flex;flex-direction:column;align-items:center;min-width:110px;">
+        <div style="width:14px;height:14px;border-radius:50%;background:var(--amber);flex-shrink:0;"></div>
+        <div style="width:2px;height:60px;background:var(--border);"></div>
+        <div style="font-size:.72rem;color:var(--amber);margin-top:6px;text-align:center;font-weight:600;">03:15</div>
+        <div style="font-size:.68rem;color:var(--muted);text-align:center;">Régimen SOL<br>→ BEAR<br>Cierre auto</div>
+      </div>
+
+      <div style="height:2px;background:var(--border);flex:1;margin-top:6px;"></div>
+
+      <div style="display:flex;flex-direction:column;align-items:center;min-width:110px;">
+        <div style="width:14px;height:14px;border-radius:50%;background:var(--purple);flex-shrink:0;"></div>
+        <div style="width:2px;height:60px;background:var(--border);"></div>
+        <div style="font-size:.72rem;color:var(--purple);margin-top:6px;text-align:center;font-weight:600;">03:30</div>
+        <div style="font-size:.68rem;color:var(--muted);text-align:center;">SOL analizado<br>de nuevo<br>(timer reset)</div>
+      </div>
+
+    </div>
+
+    <div class="legend">
+      <div class="leg-item"><div class="leg-dot" style="background:var(--cyan)"></div>Ciclo monitor 15min</div>
+      <div class="leg-item"><div class="leg-dot" style="background:var(--purple)"></div>Análisis Claude</div>
+      <div class="leg-item"><div class="leg-dot" style="background:var(--green)"></div>Entrada ejecutada</div>
+      <div class="leg-item"><div class="leg-dot" style="background:var(--amber)"></div>Salida por régimen</div>
+      <div class="leg-item"><div class="leg-dot" style="background:var(--red)"></div>Stop/Target hit</div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+     9. CHECKLIST PRODUCCIÓN
+═════════════════════════════════════════════════════════ -->
+<div class="section">
+  <div class="section-title">9 · Checklist antes de pasar a producción real</div>
+  <div style="background:var(--card);border:1px solid var(--border);border-radius:14px;padding:20px;display:flex;flex-direction:column;gap:10px;">
+
+    <div style="font-size:.82rem;color:var(--dim);line-height:1.6;display:flex;gap:10px;align-items:flex-start;">
+      <span style="color:var(--muted);flex-shrink:0;">①</span>
+      <span>Observar <b>1–2 semanas en Testnet</b>. Verificar que stops y targets se detectan correctamente, que el HMM clasifica regímenes razonables, que Claude toma decisiones coherentes.</span>
+    </div>
+    <div style="font-size:.82rem;color:var(--dim);line-height:1.6;display:flex;gap:10px;align-items:flex-start;">
+      <span style="color:var(--muted);flex-shrink:0;">②</span>
+      <span>Cambiar <code style="background:var(--card2);padding:1px 5px;border-radius:4px;">BINANCE_TESTNET=false</code> en Railway. Solo esto habilita dinero real.</span>
+    </div>
+    <div style="font-size:.82rem;color:var(--dim);line-height:1.6;display:flex;gap:10px;align-items:flex-start;">
+      <span style="color:var(--muted);flex-shrink:0;">③</span>
+      <span>Subir <code style="background:var(--card2);padding:1px 5px;border-radius:4px;">ANALYSIS_INTERVAL_MINUTES=240</code> para reducir costo de tokens en producción.</span>
+    </div>
+    <div style="font-size:.82rem;color:var(--dim);line-height:1.6;display:flex;gap:10px;align-items:flex-start;">
+      <span style="color:var(--muted);flex-shrink:0;">④</span>
+      <span>Verificar fondeo: la cuenta de Binance necesita saldo suficiente para los 3 pares simultáneos ($10 × 3 = $30 mínimo más comisiones).</span>
+    </div>
+    <div style="font-size:.82rem;color:var(--dim);line-height:1.6;display:flex;gap:10px;align-items:flex-start;">
+      <span style="color:var(--muted);flex-shrink:0;">⑤</span>
+      <span>Setear <code style="background:var(--card2);padding:1px 5px;border-radius:4px;">AGENT_API_TOKEN</code> en Railway para proteger el endpoint de cierre manual.</span>
+    </div>
+    <div style="font-size:.82rem;color:var(--dim);line-height:1.6;display:flex;gap:10px;align-items:flex-start;">
+      <span style="color:var(--muted);flex-shrink:0;">⑥</span>
+      <span>Re-entrenar los modelos HMM con datos más recientes si pasaron más de 6 meses desde el entrenamiento original.</span>
+    </div>
+
+  </div>
+</div>
+
+<div style="text-align:center;font-size:.72rem;color:var(--muted);margin-top:32px;">
+  Crypto Agent · feature/hmm-regime-classifier · generado 2026-04-01
+</div>
+
+</body>
+</html>
