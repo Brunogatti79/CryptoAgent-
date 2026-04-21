@@ -645,6 +645,8 @@ def run_cycle():
 
 def main():
     log.info("=== CRYPTO AGENT v3 ARRANCANDO ===")
+    log.info(f"DB path: {exc.DB_PATH}")
+    log.info(f"Capital inicial: ${config.INITIAL_CAPITAL_USD:,.2f}")
 
     # HTTP server arranca primero — Railway necesita que el puerto esté escuchando
     # antes de marcar el proceso como healthy
