@@ -49,7 +49,7 @@ state = {
 
 
 def needs_analysis(symbol: str) -> bool:
-    """True si pasaron ANALYSIS_INTERVAL_MINUTES desde el último análisis Claude de este par."""
+    """True si pasaron ANALYSIS_INTERVAL_MINUTES desde el último análisis de este par."""
     last = state["last_analysis"].get(symbol)
     if last is None:
         return True
@@ -69,12 +69,8 @@ def reset_daily_state_if_needed():
 
 def _check_regime_exits(regimes: dict, mkt: dict) -> list[dict]:
     """
-    Cierra posiciones al mercado si el régimen cambió a uno incompatible con la dirección.
-
-    Lógica:
-      - LONG abierto + régimen ahora es BEAR_TREND → salir (la tesis alcista ya no aplica)
-      - SHORT abierto + régimen ahora es BULL_TREND → salir
-      - Otros cambios de régimen: no forzar salida (SIDEWAYS/REVERSAL son ambiguos)
+    Cierra posiciones al mercado si el régimen cambió a uno incompatible.
+    Solo aplica a Grupo A (tienen modelo HMM).
     """
     closed = []
     for sym in config.SYMBOLS:
@@ -109,10 +105,7 @@ def _check_regime_exits(regimes: dict, mkt: dict) -> list[dict]:
 
 
 def _scan_group_b() -> list[str]:
-    """
-    Escanea top movers de Binance una vez por día.
-    Retorna lista de símbolos nuevos del Grupo B.
-    """
+    """Escanea top movers de Binance una vez por día."""
     today = datetime.now().date()
     if state["last_group_b_scan"] == today:
         return state["group_b_symbols"]
@@ -159,7 +152,8 @@ def _update_pair_stats(signals: list[dict], mkt: dict, regimes: dict) -> None:
     """Actualiza contadores por par en el state en memoria."""
     sig_map = {s["symbol"]: s for s in signals}
 
-    for sym in config.SYMBOLS:
+    all_tracked = list(config.SYMBOLS) + list(config.SYMBOLS_C)
+    for sym in all_tracked:
         ps = state["pair_stats"].setdefault(sym, {
             "queries": 0, "actionable": 0, "discarded": 0,
             "last_signal": None, "last_conviction": 0,
@@ -214,7 +208,6 @@ def write_dashboard_state(mkt: dict, fng: dict, regimes: dict,
     """Escribe dashboard_state.json — leído por el dashboard PWA."""
     trade_stats = exc.get_all_trades_stats()
 
-    # Enriquecer open_trades con PnL flotante actual
     for t in trade_stats["open_trades"]:
         price = mkt.get(t["symbol"], {}).get("price", 0)
         if price and t["entry_price"]:
@@ -288,7 +281,6 @@ class APIHandler(BaseHTTPRequestHandler):
         if path in ('/', '/index.html'):
             path = '/dashboard.html'
 
-        # API endpoints
         if path == '/api/events':
             self._handle_events()
             return
@@ -335,7 +327,6 @@ class APIHandler(BaseHTTPRequestHandler):
             self._json(400, {'error': 'JSON inválido'})
             return
 
-        # Auth
         if config.AGENT_API_TOKEN and body.get('token') != config.AGENT_API_TOKEN:
             self._json(401, {'error': 'Token inválido'})
             return
@@ -391,8 +382,12 @@ def run_cycle():
     # 1. Scan Grupo B — una vez por día
     group_b_symbols = _scan_group_b()
 
-    # 2. Datos de mercado — Grupo A + Grupo B activos
-    all_symbols = config.SYMBOLS + [s for s in group_b_symbols if s not in config.SYMBOLS]
+    # 2. Datos de mercado — Grupo A + Grupo B + Grupo C
+    all_symbols = (
+        config.SYMBOLS
+        + [s for s in group_b_symbols if s not in config.SYMBOLS]
+        + [s for s in config.SYMBOLS_C if s not in config.SYMBOLS and config.GROUP_C_ENABLED]
+    )
     try:
         mkt = market_data_module.get_prices_and_indicators(all_symbols)
         fng = market_data_module.get_fear_and_greed()
@@ -430,7 +425,6 @@ def run_cycle():
         regimes        = regime_module.classify_all(config.SYMBOLS)
         regime_context = regime_module.format_regime_context(regimes)
         _log_regimes(regimes)
-        # Detectar cambios de régimen y loguearlos como eventos
         for sym, info in regimes.items():
             if not info.get("available"):
                 continue
@@ -478,11 +472,9 @@ def run_cycle():
         for sym in due_a:
             state["last_analysis"][sym] = datetime.now()
             try:
-                # Paso 1: filtro mecánico (sin llamada a API)
                 cond = market_data_module.check_entry_conditions(
                     sym, mkt, regimes.get(sym, {})
                 )
-                # Snapshot completo del mercado en el momento de la decisión
                 d = mkt.get(sym, {})
                 snapshot = {
                     "price":          d.get("price"),
@@ -518,7 +510,6 @@ def run_cycle():
 
                 log.info(f"  [A] {sym} califica ({cond['direction']}) [{cond.get('signal_type')}]: {' | '.join(cond['reasons'])}")
 
-                # Paso 2: veto Claude Haiku (barato, rápido)
                 reg_ctx = regime_module.format_regime_context(
                     {sym: regimes[sym]} if sym in regimes else {}
                 )
@@ -536,7 +527,6 @@ def run_cycle():
                                            "conditions": cond["reasons"]})
                     continue
 
-                # Paso 3: señal aprobada — armar para ejecución
                 sig = {
                     "symbol":      sym,
                     "direction":   cond["direction"],
@@ -564,7 +554,6 @@ def run_cycle():
 
     # 6b. Análisis Claude Grupo B — movers sin posición abierta
     if group_b_symbols and not state["halted"]:
-        # Controlar máx posiciones Grupo B
         open_b = sum(1 for s in group_b_symbols if exc.has_open_position(s))
         free_b = [s for s in group_b_symbols
                   if not exc.has_open_position(s) and needs_analysis(s)]
@@ -592,11 +581,69 @@ def run_cycle():
             except Exception as e:
                 log.error(f"Error brain B: {e}")
 
+    # 6c. Análisis Grupo C — mecánico puro sin HMM ni Claude
+    if config.GROUP_C_ENABLED and not state["halted"]:
+        open_c = sum(1 for s in config.SYMBOLS_C if exc.has_open_position(s))
+        free_c = [s for s in config.SYMBOLS_C
+                  if not exc.has_open_position(s) and needs_analysis(s)]
+
+        # Asegurar datos de mercado para símbolos C que no estén en mkt
+        missing_c = [s for s in free_c if s not in mkt]
+        if missing_c:
+            try:
+                extra = market_data_module.get_prices_and_indicators(missing_c)
+                mkt.update(extra)
+            except Exception as e:
+                log.warning(f"[C] Error fetch datos extra: {e}")
+
+        for sym in free_c:
+            if open_c >= config.GROUP_C_MAX_POSITIONS:
+                log.info(f"  [C] Máx posiciones alcanzado ({config.GROUP_C_MAX_POSITIONS})")
+                break
+            state["last_analysis"][sym] = datetime.now()
+            try:
+                cond = market_data_module.check_entry_conditions_c(sym, mkt)
+
+                if not cond["qualified"]:
+                    log.info(f"  [C] {sym} no califica: {' | '.join(cond['blockers'])}")
+                    exc.log_event("ENTRY_CHECK", f"{sym} — no califica [{cond.get('signal_type','?')}]",
+                                  symbol=sym, group="C", level="INFO",
+                                  details={"qualified": False,
+                                           "blockers":  cond["blockers"],
+                                           "reasons":   cond["reasons"]})
+                    continue
+
+                log.info(f"  [C] {sym} califica ({cond['direction']}) [{cond['signal_type']}]: {' | '.join(cond['reasons'])}")
+
+                sig = {
+                    "symbol":      sym,
+                    "direction":   cond["direction"],
+                    "conviction":  8,
+                    "actionable":  True,
+                    "thesis":      f"[{cond['signal_type']}] {', '.join(cond['reasons'])}",
+                    "group":       "C",
+                    "group_name":  "C",
+                    "take_profit": "",
+                    "stop_loss":   "",
+                }
+                signals.append(sig)
+                open_c += 1
+                exc.log_event("ENTRY_CHECK",
+                              f"[C] {sym} → {cond['direction']} [{cond['signal_type']}] califica",
+                              symbol=sym, group="C", level="WARNING",
+                              details={"qualified":   True,
+                                       "direction":   cond["direction"],
+                                       "reasons":     cond["reasons"],
+                                       "signal_type": cond["signal_type"]})
+
+            except Exception as e:
+                log.error(f"Error análisis C {sym}: {e}")
+
     # 7. Ejecutar señales accionables
     fng_value = fng.get("value", 50)
     for signal in signals:
         if signal.get("actionable") and not state["halted"]:
-            # Filtro Fear & Greed: no abrir LONG en Extreme Greed ni SHORT en Extreme Fear
+            # Filtro Fear & Greed
             if signal["direction"] == "LONG" and fng_value > 80:
                 log.info(f"  Skip {signal['symbol']} LONG — F&G {fng_value} (Extreme Greed)")
                 exc.log_event("ENTRY_CHECK", f"{signal['symbol']} bloqueado — F&G {fng_value} Extreme Greed",
@@ -609,17 +656,22 @@ def run_cycle():
                               symbol=signal["symbol"], level="WARNING",
                               details={"fng": fng_value, "direction": "SHORT"})
                 continue
-            is_b     = signal.get("group") == "B"
-            stop_pct = config.STOP_LOSS_PCT_B   if is_b else config.STOP_LOSS_PCT
-            log.info(f"Ejecutando: {signal['symbol']} {signal['direction']} (Grupo {'B' if is_b else 'A'})")
-            signal["group_name"] = "B" if is_b else "A"
-            res = exc.execute_signal(signal, mkt, stop_pct=stop_pct)
+
+            group    = signal.get("group", "A")
+            stop_pct = (config.STOP_LOSS_PCT_B if group == "B"
+                        else config.STOP_LOSS_PCT_C if group == "C"
+                        else config.STOP_LOSS_PCT)
+            max_usd  = config.MAX_TRADE_USD_C if group == "C" else None
+
+            log.info(f"Ejecutando: {signal['symbol']} {signal['direction']} (Grupo {group})")
+            signal["group_name"] = group
+            res = exc.execute_signal(signal, mkt, stop_pct=stop_pct, max_trade_usd=max_usd)
             if res:
                 tg.send_execution_confirmation(res)
                 exc.log_event("TRADE_OPEN",
                               f"{res['symbol']} {res['direction']} @ ${res['entry_price']:,.4f}",
-                              symbol=res["symbol"], group=signal["group_name"], level="INFO",
-                              details={**res, "group": signal["group_name"]})
+                              symbol=res["symbol"], group=group, level="INFO",
+                              details={**res, "group": group})
             else:
                 log.warning(f"No ejecutado: {signal['symbol']}")
 
@@ -647,13 +699,14 @@ def main():
     log.info("=== CRYPTO AGENT v3 ARRANCANDO ===")
     log.info(f"DB path: {exc.DB_PATH}")
     log.info(f"Capital inicial: ${config.INITIAL_CAPITAL_USD:,.2f}")
+    log.info(f"Símbolos A: {config.SYMBOLS}")
+    log.info(f"Símbolos C: {config.SYMBOLS_C} (enabled={config.GROUP_C_ENABLED})")
 
     # HTTP server arranca primero — Railway necesita que el puerto esté escuchando
-    # antes de marcar el proceso como healthy
     threading.Thread(target=start_api_server, daemon=True, name="api-server").start()
     log.info(f"HTTP server arrancado en puerto {config.PORT}")
 
-    # Motor async (WebSocket + TrailingStop) — hilo separado si ASYNC_ENABLED=true
+    # Motor async (WebSocket + TrailingStop)
     def _run_async_engine():
         from main_async import run_trailing_engine
         asyncio.run(run_trailing_engine())
@@ -664,11 +717,14 @@ def main():
     exc.init_db()
     exc.log_event("STARTUP", "Agente iniciado",
                   level="INFO", details={
-                      "symbols_a": config.SYMBOLS,
+                      "symbols_a":       config.SYMBOLS,
+                      "symbols_c":       config.SYMBOLS_C,
                       "group_b_enabled": config.GROUP_B_ENABLED,
-                      "testnet": config.BINANCE_TESTNET,
-                      "monitor_min": config.MONITOR_INTERVAL_MINUTES,
-                      "analysis_min": config.ANALYSIS_INTERVAL_MINUTES,
+                      "group_c_enabled": config.GROUP_C_ENABLED,
+                      "testnet":         config.BINANCE_TESTNET,
+                      "monitor_min":     config.MONITOR_INTERVAL_MINUTES,
+                      "analysis_min":    config.ANALYSIS_INTERVAL_MINUTES,
+                      "capital_inicial": config.INITIAL_CAPITAL_USD,
                   })
     tg.send_startup()
 

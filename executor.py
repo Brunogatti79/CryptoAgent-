@@ -217,7 +217,6 @@ def market_close_trade(trade: dict, current_price: float, reason: str) -> dict:
         exchange = get_exchange()
         exchange.load_markets()
         quantity = exchange.amount_to_precision(trade["symbol"], trade["quantity"])
-        # Para cerrar un LONG vendemos, para cerrar un SHORT compramos
         side  = 'sell' if trade["direction"] == 'LONG' else 'buy'
         order = exchange.create_order(
             symbol=trade["symbol"], type='market', side=side, amount=float(quantity)
@@ -225,7 +224,7 @@ def market_close_trade(trade: dict, current_price: float, reason: str) -> dict:
         exit_price = float(order.get('average') or order.get('price') or current_price)
     except Exception as e:
         print(f"  [executor] ERROR cerrando mercado {trade['symbol']}: {e}")
-        exit_price = current_price  # fallback: registrar al precio actual
+        exit_price = current_price
 
     if trade["direction"] == 'LONG':
         pnl = (exit_price - trade["entry_price"]) * trade["quantity"]
@@ -265,8 +264,6 @@ def _calc_sl_tp(symbol: str, direction: str, entry: float,
                 stop_pct: float, take_profit_signal: float) -> tuple[float, float]:
     """
     Calcula SL/TP usando ATR(14) 4h — mismo timeframe que la señal de entrada.
-    Esto evita que stops calculados con ATR 1h (más ajustado) sean triggeados
-    por ruido intradiario antes de que la tesis 4h se desarrolle.
 
     Roles de timeframe en el sistema:
       - ATR 4h → SL/TP inicial (este cálculo) — coherente con la tesis de entrada
@@ -276,13 +273,11 @@ def _calc_sl_tp(symbol: str, direction: str, entry: float,
     """
     from strategies.trailing_stop import calc_atr_multi, ATR_MULT
 
-    # Calcular ATR en 4h y 1h simultáneamente
     atr_data = calc_atr_multi(symbol, period=14)
     atr_4h   = atr_data['atr_4h']
     atr_1h   = atr_data['atr_1h']
     ratio    = atr_data['ratio']
 
-    # Warning si el mercado está comprimido (baja fiabilidad del ATR 4h)
     if atr_data['compressed']:
         print(
             f"  [executor] ⚠️  {symbol}: ATR comprimido — "
@@ -291,7 +286,6 @@ def _calc_sl_tp(symbol: str, direction: str, entry: float,
         )
 
     if atr_4h and atr_4h > 0:
-        # ── SL/TP basado en ATR 4h ──────────────────────────────
         if direction == 'LONG':
             sl = entry - atr_4h * ATR_MULT
             tp = take_profit_signal if take_profit_signal > entry \
@@ -306,7 +300,6 @@ def _calc_sl_tp(symbol: str, direction: str, entry: float,
             f"ratio={ratio:.2f}x → SL={sl:.4f} TP={tp:.4f}"
         )
     else:
-        # ── Fallback a porcentaje fijo ──────────────────────────
         pct = stop_pct or 0.04
         if direction == 'LONG':
             sl = entry * (1 - pct)
@@ -321,48 +314,46 @@ def _calc_sl_tp(symbol: str, direction: str, entry: float,
     return round(sl, 8), round(tp, 8)
 
 
-def execute_signal(signal: dict, market_data: dict, stop_pct: float = None) -> dict | None:
+def execute_signal(signal: dict, market_data: dict, stop_pct: float = None,
+                   max_trade_usd: float = None) -> dict | None:
     """
     Ejecuta una señal accionable en Binance.
     SL/TP calculado con ATR(14) 4h (coherente con la señal de entrada 4h).
     Trailing stop en runtime usa ATR 1h (ver main_async.py).
     Fallback a % fijo si ATR no disponible.
-    Retorna dict con resultado o None si no se ejecutó.
+
+    max_trade_usd: override del tamaño máximo por operación (usado por Grupo C).
+                   Si es None usa MAX_TRADE_USD de config.
     """
     init_db()
 
     symbol    = signal['symbol']
     direction = signal['direction']
 
-    # Verificar que no haya posición abierta en este par específico
     if has_open_position(symbol):
         print(f"  [executor] Ya hay posición abierta en {symbol} — saltando")
         return None
 
-    # Precio actual
     current_price = market_data.get(symbol, {}).get('price', 0)
     if not current_price:
         print(f"  [executor] Sin precio para {symbol} — abortando")
         return None
 
-    # Calcular cantidad a comprar (máximo MAX_TRADE_USD)
-    quantity_raw = MAX_TRADE_USD / current_price
+    # Tamaño de la operación — override por grupo si se especifica
+    trade_usd    = max_trade_usd if max_trade_usd else MAX_TRADE_USD
+    quantity_raw = trade_usd / current_price
 
-    # TP sugerido por Claude (referencia; puede ser reemplazado por ATR)
     take_profit_signal = parse_price(signal.get('take_profit', ''))
 
     try:
         exchange = get_exchange()
-
-        # Redondear quantity según las reglas del par
         exchange.load_markets()
         market    = exchange.market(symbol)
         precision = market['precision']['amount']
         quantity  = exchange.amount_to_precision(symbol, quantity_raw)
 
-        print(f"  [executor] Ejecutando {direction} {symbol} | qty: {quantity} | precio: ${current_price}")
+        print(f"  [executor] Ejecutando {direction} {symbol} | qty: {quantity} | precio: ${current_price} | usd: ${trade_usd}")
 
-        # Orden de mercado
         side  = 'buy' if direction == 'LONG' else 'sell'
         order = exchange.create_order(
             symbol=symbol,
@@ -375,12 +366,10 @@ def execute_signal(signal: dict, market_data: dict, stop_pct: float = None) -> d
         order_id    = str(order['id'])
         usd_value   = float(quantity) * entry_price
 
-        # SL/TP basado en ATR (se calcula con el entry_price real de la orden)
         stop_loss, take_profit = _calc_sl_tp(
             symbol, direction, entry_price, stop_pct, take_profit_signal
         )
 
-        # Guardar en DB
         trade_data = {
             'symbol':      symbol,
             'direction':   direction,
@@ -391,6 +380,7 @@ def execute_signal(signal: dict, market_data: dict, stop_pct: float = None) -> d
             'quantity':    float(quantity),
             'usd_value':   usd_value,
             'order_id':    order_id,
+            'group_name':  signal.get('group_name', 'A'),
         }
         trade_id = save_trade(trade_data)
 
@@ -414,13 +404,54 @@ def execute_signal(signal: dict, market_data: dict, stop_pct: float = None) -> d
 
 
 def get_balance_usdt() -> float:
-    """Retorna el balance de USDT disponible."""
+    """
+    Calcula el balance USDT disponible real desde la DB.
+
+    Fórmula:
+        balance = INITIAL_CAPITAL_USD + PnL_realizado - USD_en_posiciones_abiertas
+
+    Por qué no usamos fetch_balance() de Binance:
+      - En testnet siempre devuelve ~$10,000 (no refleja nuestras operaciones)
+      - En producción el saldo incluye monedas compradas que no son USDT disponible.
+      - Este cálculo refleja exactamente cuánto USDT tenemos disponible para
+        nuevas operaciones, basado en el historial de trades de la DB.
+    """
+    from config import INITIAL_CAPITAL_USD
+    try:
+        conn = sqlite3.connect(DB_PATH)
+
+        row = conn.execute(
+            "SELECT COALESCE(SUM(pnl_usd), 0) FROM trades WHERE status IN ('WIN','LOSS')"
+        ).fetchone()
+        pnl_realizado = float(row[0]) if row else 0.0
+
+        row2 = conn.execute(
+            "SELECT COALESCE(SUM(usd_value), 0) FROM trades WHERE status = 'OPEN'"
+        ).fetchone()
+        usd_en_vuelo = float(row2[0]) if row2 else 0.0
+
+        conn.close()
+
+        balance = INITIAL_CAPITAL_USD + pnl_realizado - usd_en_vuelo
+        return round(max(balance, 0.0), 2)
+
+    except Exception as e:
+        print(f"  [executor] ERROR calculando balance desde DB: {e}")
+        return 0.0
+
+
+def get_exchange_balance_usdt() -> float:
+    """
+    Consulta el balance USDT directamente desde Binance.
+    Útil para verificar manualmente, pero NO se usa para el dashboard
+    porque en testnet siempre devuelve ~$10,000.
+    """
     try:
         exchange = get_exchange()
         balance  = exchange.fetch_balance()
         return float(balance['free'].get('USDT', 0))
     except Exception as e:
-        print(f"  [executor] ERROR obteniendo balance: {e}")
+        print(f"  [executor] ERROR obteniendo balance de Binance: {e}")
         return 0.0
 
 

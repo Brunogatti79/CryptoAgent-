@@ -63,10 +63,6 @@ def get_prices_and_indicators(symbols: list[str]) -> dict:
             )
 
             # ── Confirmación timeframe 1h ────────────────────────
-            # EMA20 en 1h para validar que el precio está del lado correcto
-            # antes de ejecutar una entrada basada en señal 4h.
-            # Rol: timing fino — evita entrar en mitad de una corrección 1h
-            #      dentro de una tendencia 4h válida.
             klines_1h_url = (
                 f"https://api.binance.com/api/v3/klines"
                 f"?symbol={binance_symbol}&interval=1h&limit=30"
@@ -91,7 +87,6 @@ def get_prices_and_indicators(symbols: list[str]) -> dict:
                 "ema_cross_down":      ema_cross_down,
                 "rsi_recovery":        rsi_recovery,
                 "rsi_rejection":       rsi_rejection,
-                # ── Confirmación 1h (nuevo) ──────────────────────
                 "ema20_1h":            round(ema20_1h, 2),
                 "price_above_ema20_1h": price_above_1h,
                 "price_below_ema20_1h": price_below_1h,
@@ -220,8 +215,7 @@ def check_entry_conditions(symbol: str, market_data: dict, regime_info: dict) ->
         return {'qualified': False, 'direction': None, 'reasons': reasons,
                 'blockers': blockers, 'signal_type': None}
 
-    # 2. Detectar tipo de señal — determina qué tan estrictos somos con el RSI
-    #    EMA_CROSS y RSI_RECOVERY son señales fuertes con evidencia histórica
+    # 2. Detectar tipo de señal
     signal_type = None
     if direction == 'LONG'  and ema_cross_up:
         signal_type = 'EMA_CROSS'
@@ -242,11 +236,10 @@ def check_entry_conditions(symbol: str, market_data: dict, regime_info: dict) ->
     elif direction == 'SHORT' and trend == 'BAJISTA':
         reasons.append('EMA20 < EMA50 ✓')
     else:
-        # EMA_CROSS no requiere alineación previa — el cruce ES la alineación
         if signal_type != 'EMA_CROSS':
             blockers.append(f'EMA {trend} no alinea con {direction}')
 
-    # 4. RSI — rango más amplio si hay señal fuerte
+    # 4. RSI
     rsi_max_long  = 72 if signal_type in ('EMA_CROSS',)        else 65
     rsi_min_long  = 35 if signal_type in ('RSI_RECOVERY',)     else 42
     rsi_min_short = 28 if signal_type in ('EMA_CROSS',)        else 35
@@ -267,7 +260,7 @@ def check_entry_conditions(symbol: str, market_data: dict, regime_info: dict) ->
         else:
             blockers.append(f'RSI {rsi:.1f} alto para SHORT')
 
-    # 5. Volumen — más estricto sin señal fuerte
+    # 5. Volumen
     vol_min = 1.2 if signal_type else 1.3
     if vol_ratio >= vol_min:
         reasons.append(f'volumen {vol_ratio:.1f}x ✓')
@@ -275,24 +268,18 @@ def check_entry_conditions(symbol: str, market_data: dict, regime_info: dict) ->
         blockers.append(f'volumen {vol_ratio:.1f}x bajo (mín {vol_min}×)')
 
     # 6. Confirmación timeframe 1h
-    #    Verifica que el precio esté del lado correcto de la EMA20 1h.
-    #    Evita entrar en mitad de una corrección intradiaria dentro de
-    #    una tendencia 4h válida.
-    #    Excepción: EMA_CROSS omite este filtro porque el cruce mismo
-    #    confirma la dirección — exigir 1h sería redundante y muy restrictivo.
     if signal_type != 'EMA_CROSS':
         price_above_1h = d.get('price_above_ema20_1h')
         price_below_1h = d.get('price_below_ema20_1h')
 
         if price_above_1h is None:
-            # Dato no disponible — no bloqueamos, solo informamos
             reasons.append('confirmación 1h sin datos (omitida)')
         elif direction == 'LONG':
             if price_above_1h:
                 reasons.append('precio > EMA20 1h ✓')
             else:
                 blockers.append('precio bajo EMA20 1h — sin confirmación intradiaria')
-        else:  # SHORT
+        else:
             if price_below_1h:
                 reasons.append('precio < EMA20 1h ✓')
             else:
@@ -305,6 +292,128 @@ def check_entry_conditions(symbol: str, market_data: dict, regime_info: dict) ->
         'qualified':   qualified,
         'direction':   direction if qualified else None,
         'signal_type': signal_type or 'ALIGNMENT',
+        'reasons':     reasons,
+        'blockers':    blockers,
+    }
+
+
+def check_entry_conditions_c(symbol: str, market_data: dict) -> dict:
+    """
+    Filtro mecánico para Grupo C — pares sin modelo HMM (XRP, LINK, etc).
+    No depende de régimen. Solo velas e indicadores técnicos.
+
+    Condiciones LONG:
+      1. EMA20 > EMA50 en 4h         (tendencia alcista)
+      2. RSI entre 45-62             (momentum sin sobrecompra)
+      3. Volumen >= 1.3x             (participación real)
+      4. Precio > EMA20 1h           (timing fino)
+      5. ATR 4h/1h ratio > 1.5x     (mercado no comprimido)
+
+    Condiciones SHORT: espejo exacto.
+    """
+    from strategies.trailing_stop import calc_atr_multi
+
+    blockers: list[str] = []
+    reasons:  list[str] = []
+
+    d = market_data.get(symbol, {})
+    if d.get('error'):
+        return {'qualified': False, 'direction': None,
+                'reasons': [], 'blockers': [f'error de datos: {d["error"]}'],
+                'signal_type': 'C_MECHANICAL'}
+
+    rsi            = float(d.get('rsi',            50.0))
+    trend          = d.get('trend',         '')
+    vol_ratio      = float(d.get('vol_ratio',       1.0))
+    ema_cross_up   = d.get('ema_cross_up',   False)
+    ema_cross_down = d.get('ema_cross_down', False)
+    price_above_1h = d.get('price_above_ema20_1h')
+    price_below_1h = d.get('price_below_ema20_1h')
+
+    # 1. Dirección por EMA alignment
+    if trend == 'ALCISTA':
+        direction = 'LONG'
+        reasons.append('EMA20 > EMA50 ✓')
+    elif trend == 'BAJISTA':
+        direction = 'SHORT'
+        reasons.append('EMA20 < EMA50 ✓')
+    else:
+        blockers.append('EMA sin tendencia clara')
+        return {'qualified': False, 'direction': None,
+                'reasons': reasons, 'blockers': blockers, 'signal_type': 'C_MECHANICAL'}
+
+    # 2. Señal fuerte — EMA cross reciente relaja RSI
+    signal_type = 'C_MECHANICAL'
+    if direction == 'LONG' and ema_cross_up:
+        signal_type = 'C_EMA_CROSS'
+        reasons.append('🔼 EMA cross reciente ✓✓')
+    elif direction == 'SHORT' and ema_cross_down:
+        signal_type = 'C_EMA_CROSS'
+        reasons.append('🔽 EMA cross reciente ✓✓')
+
+    # 3. RSI — más estricto que Grupo A por ausencia de HMM
+    rsi_max_long  = 68 if signal_type == 'C_EMA_CROSS' else 62
+    rsi_min_long  = 42
+    rsi_min_short = 32 if signal_type == 'C_EMA_CROSS' else 38
+    rsi_max_short = 58
+
+    if direction == 'LONG':
+        if rsi_min_long <= rsi <= rsi_max_long:
+            reasons.append(f'RSI {rsi:.1f} ✓')
+        elif rsi > rsi_max_long:
+            blockers.append(f'RSI {rsi:.1f} sobrecomprado')
+        else:
+            blockers.append(f'RSI {rsi:.1f} débil para LONG')
+    else:
+        if rsi_min_short <= rsi <= rsi_max_short:
+            reasons.append(f'RSI {rsi:.1f} ✓')
+        elif rsi < rsi_min_short:
+            blockers.append(f'RSI {rsi:.1f} sobrevendido')
+        else:
+            blockers.append(f'RSI {rsi:.1f} alto para SHORT')
+
+    # 4. Volumen
+    if vol_ratio >= 1.3:
+        reasons.append(f'volumen {vol_ratio:.1f}x ✓')
+    else:
+        blockers.append(f'volumen {vol_ratio:.1f}x bajo (mín 1.3x)')
+
+    # 5. Confirmación 1h (salvo EMA cross)
+    if signal_type != 'C_EMA_CROSS':
+        if price_above_1h is None:
+            reasons.append('confirmación 1h sin datos (omitida)')
+        elif direction == 'LONG':
+            if price_above_1h:
+                reasons.append('precio > EMA20 1h ✓')
+            else:
+                blockers.append('precio bajo EMA20 1h')
+        else:
+            if price_below_1h:
+                reasons.append('precio < EMA20 1h ✓')
+            else:
+                blockers.append('precio sobre EMA20 1h')
+    else:
+        reasons.append('confirmación 1h omitida (EMA cross)')
+
+    # 6. ATR ratio — mercado no comprimido
+    try:
+        atr_data = calc_atr_multi(symbol, period=14)
+        ratio    = atr_data.get('ratio')
+        if ratio is not None:
+            if ratio >= 1.5:
+                reasons.append(f'ATR ratio {ratio:.1f}x ✓')
+            else:
+                blockers.append(f'mercado comprimido ATR ratio {ratio:.1f}x (mín 1.5x)')
+        else:
+            reasons.append('ATR ratio sin datos (omitido)')
+    except Exception:
+        reasons.append('ATR ratio sin datos (omitido)')
+
+    qualified = len(blockers) == 0
+    return {
+        'qualified':   qualified,
+        'direction':   direction if qualified else None,
+        'signal_type': signal_type,
         'reasons':     reasons,
         'blockers':    blockers,
     }
