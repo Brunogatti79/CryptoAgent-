@@ -25,16 +25,7 @@ GITHUB_GIST_TOKEN = os.getenv("GITHUB_GIST_TOKEN", "")
 GITHUB_GIST_ID    = os.getenv("GITHUB_GIST_ID", "")
 
 # --- Pares que el agente monitorea ---
-# Configurables por variable de entorno — sin necesidad de tocar código
-SYMBOLS   = [s.strip() for s in os.getenv("SYMBOLS_A", "BTC/USDT,ETH/USDT,SOL/USDT").split(",")]
-SYMBOLS_C = [s.strip() for s in os.getenv("SYMBOLS_C", "XRP/USDT,LINK/USDT").split(",")]
-
-# --- Capital inicial del agente (base para calcular balance real desde DB) ---
-# Seteá este valor igual al USDT que tenés en la cuenta al arrancar.
-# El agente lo usa para calcular el balance disponible real:
-#   balance = INITIAL_CAPITAL_USD + PnL_realizado - USD_en_posiciones_abiertas
-# En testnet de Binance la API devuelve siempre $10,000 — este parámetro corrige eso.
-INITIAL_CAPITAL_USD = float(os.getenv("INITIAL_CAPITAL_USD", "200"))
+SYMBOLS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "ADA/USDT"]
 
 # --- Reglas de riesgo (hardcoded, el agente no las puede cambiar) ---
 MAX_TRADE_USD         = float(os.getenv("MAX_TRADE_USD",      "50"))  # por operación en USD
@@ -48,19 +39,13 @@ AGENT_API_TOKEN = os.getenv("AGENT_API_TOKEN", "")   # protege /api/close
 PORT            = int(os.getenv("PORT", "8080"))       # Railway lo setea automáticamente
 
 # --- Grupo B — altcoins volátiles (top movers diarios) ---
-GROUP_B_ENABLED        = os.getenv("GROUP_B_ENABLED",        "true").lower() == "true"
-GROUP_B_MAX_POSITIONS  = int(os.getenv("GROUP_B_MAX_POSITIONS",   "1"))
-GROUP_B_TOP_MOVERS     = int(os.getenv("GROUP_B_TOP_MOVERS",      "2"))
+GROUP_B_ENABLED        = os.getenv("GROUP_B_ENABLED",       "true").lower() == "true"
+GROUP_B_MAX_POSITIONS  = int(os.getenv("GROUP_B_MAX_POSITIONS",  "1"))
+GROUP_B_TOP_MOVERS     = int(os.getenv("GROUP_B_TOP_MOVERS",     "2"))
 GROUP_B_MIN_CHANGE_PCT = float(os.getenv("GROUP_B_MIN_CHANGE_PCT", "5.0"))
 GROUP_B_MIN_VOLUME_USD = float(os.getenv("GROUP_B_MIN_VOLUME_USD", "50000000"))
-STOP_LOSS_PCT_B        = float(os.getenv("STOP_LOSS_PCT_B",   "0.03"))
-TAKE_PROFIT_PCT_B      = float(os.getenv("TAKE_PROFIT_PCT_B", "0.15"))
-
-# --- Grupo C — pares mecánicos sin HMM ---
-GROUP_C_ENABLED       = os.getenv("GROUP_C_ENABLED",        "false").lower() == "true"
-GROUP_C_MAX_POSITIONS = int(os.getenv("GROUP_C_MAX_POSITIONS",  "1"))
-MAX_TRADE_USD_C       = float(os.getenv("MAX_TRADE_USD_C",      "25"))
-STOP_LOSS_PCT_C       = float(os.getenv("STOP_LOSS_PCT_C",      "0.04"))
+STOP_LOSS_PCT_B        = float(os.getenv("STOP_LOSS_PCT_B",  "0.03"))
+TAKE_PROFIT_PCT_B      = float(os.getenv("TAKE_PROFIT_PCT_B","0.15"))
 
 # --- Intervalos ---
 MONITOR_INTERVAL_MINUTES  = int(os.getenv("MONITOR_INTERVAL_MINUTES",  "15"))   # SL/TP check
