@@ -50,3 +50,9 @@ TAKE_PROFIT_PCT_B      = float(os.getenv("TAKE_PROFIT_PCT_B","0.15"))
 # --- Intervalos ---
 MONITOR_INTERVAL_MINUTES  = int(os.getenv("MONITOR_INTERVAL_MINUTES",  "15"))   # SL/TP check
 ANALYSIS_INTERVAL_MINUTES = int(os.getenv("ANALYSIS_INTERVAL_MINUTES", "240"))  # régimen + Claude
+# --- Intervalos ---
+MONITOR_INTERVAL_MINUTES  = int(os.getenv("MONITOR_INTERVAL_MINUTES",  "15"))
+ANALYSIS_INTERVAL_MINUTES = int(os.getenv("ANALYSIS_INTERVAL_MINUTES", "240"))
+
+# --- Capital inicial (referencia para métricas) ---
+INITIAL_CAPITAL_USD   = float(os.getenv("INITIAL_CAPITAL_USD", "1000"))
