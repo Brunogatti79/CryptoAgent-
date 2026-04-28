@@ -25,7 +25,7 @@ GITHUB_GIST_TOKEN = os.getenv("GITHUB_GIST_TOKEN", "")
 GITHUB_GIST_ID    = os.getenv("GITHUB_GIST_ID", "")
 
 # --- Pares que el agente monitorea ---
-SYMBOLS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "ADA/USDT"]
+SYMBOLS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT"]
 
 # --- Reglas de riesgo (hardcoded, el agente no las puede cambiar) ---
 MAX_TRADE_USD         = float(os.getenv("MAX_TRADE_USD",      "50"))  # por operación en USD
