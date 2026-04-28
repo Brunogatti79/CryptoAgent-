@@ -56,3 +56,6 @@ ANALYSIS_INTERVAL_MINUTES = int(os.getenv("ANALYSIS_INTERVAL_MINUTES", "240"))
 
 # --- Capital inicial (referencia para métricas) ---
 INITIAL_CAPITAL_USD   = float(os.getenv("INITIAL_CAPITAL_USD", "1000"))
+# --- Grupo C ---
+SYMBOLS_C = []
+GROUP_C_ENABLED = False
