@@ -277,8 +277,11 @@ def check_entry_conditions(symbol: str, market_data: dict, regime_info: dict) ->
         else:
             blockers.append(f'RSI {rsi:.1f} alto para SHORT')
 
-    # 5. Volumen — más estricto sin señal fuerte
-    vol_min = 1.2 if signal_type else 1.3
+    # 5. Volumen — umbral según contexto
+    # Con señal fuerte (EMA_CROSS/RSI_RECOVERY): 1.2x
+    # Sin señal fuerte en REVERSAL: 1.2x — recuperaciones arrancan con volumen gradual
+    # Sin señal fuerte en tendencia normal: 1.3x
+    vol_min = 1.2 if signal_type else (1.2 if is_reversal else 1.3)
     if vol_ratio >= vol_min:
         reasons.append(f'volumen {vol_ratio:.1f}x ✓')
     else:
