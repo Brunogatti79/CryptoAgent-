@@ -209,17 +209,20 @@ def check_entry_conditions(symbol: str, market_data: dict, regime_info: dict) ->
     rsi_rejection = d.get('rsi_rejection',  False)
 
     # 1. Régimen operable
-    # REVERSAL se trata como LONG temprano: el HMM detectó recuperación post-bear.
-    # El veto de Claude Haiku actúa como segunda capa de protección ante falsas reversiones.
+    # REVERSAL se trata como LONG temprano (post-bear recovery).
+    # Los gates siguientes se relajan automáticamente vía is_reversal.
+    # Claude Haiku actúa como veto de última instancia.
+    is_reversal = False
     if regime == 'BULL_TREND':
         direction = 'LONG'
         reasons.append('régimen BULL_TREND ✓')
-    elif regime == 'REVERSAL':
-        direction = 'LONG'
-        reasons.append('régimen REVERSAL — recuperación post-bear ✓ (sesgo alcista temprano)')
     elif regime == 'BEAR_TREND':
         direction = 'SHORT'
         reasons.append('régimen BEAR_TREND ✓')
+    elif regime == 'REVERSAL':
+        direction = 'LONG'
+        is_reversal = True
+        reasons.append('régimen REVERSAL → LONG temprano ✓ (veto Haiku activo)')
     else:
         blockers.append(f'régimen {regime or "DESCONOCIDO"} — sin tendencia clara')
         return {'qualified': False, 'direction': None, 'reasons': reasons,
@@ -251,9 +254,11 @@ def check_entry_conditions(symbol: str, market_data: dict, regime_info: dict) ->
         if signal_type != 'EMA_CROSS':
             blockers.append(f'EMA {trend} no alinea con {direction}')
 
-    # 4. RSI — rango más amplio si hay señal fuerte
+    # 4. RSI — rango más amplio si hay señal fuerte o régimen REVERSAL
+    # En REVERSAL el RSI suele estar en 38–52 durante la recuperación inicial,
+    # usar mínimo 42 bloquearía exactamente las entradas más valiosas.
     rsi_max_long  = 72 if signal_type in ('EMA_CROSS',)        else 65
-    rsi_min_long  = 35 if signal_type in ('RSI_RECOVERY',)     else 42
+    rsi_min_long  = 35 if signal_type in ('RSI_RECOVERY',)     else (38 if is_reversal else 42)
     rsi_min_short = 28 if signal_type in ('EMA_CROSS',)        else 35
     rsi_max_short = 65 if signal_type in ('RSI_REJECTION',)    else 58
 
@@ -273,7 +278,7 @@ def check_entry_conditions(symbol: str, market_data: dict, regime_info: dict) ->
             blockers.append(f'RSI {rsi:.1f} alto para SHORT')
 
     # 5. Volumen — más estricto sin señal fuerte
-    vol_min = 1.1 if signal_type else 1.2
+    vol_min = 1.2 if signal_type else 1.3
     if vol_ratio >= vol_min:
         reasons.append(f'volumen {vol_ratio:.1f}x ✓')
     else:
@@ -283,9 +288,18 @@ def check_entry_conditions(symbol: str, market_data: dict, regime_info: dict) ->
     #    Verifica que el precio esté del lado correcto de la EMA20 1h.
     #    Evita entrar en mitad de una corrección intradiaria dentro de
     #    una tendencia 4h válida.
-    #    Excepción: EMA_CROSS omite este filtro porque el cruce mismo
-    #    confirma la dirección — exigir 1h sería redundante y muy restrictivo.
-    if signal_type != 'EMA_CROSS':
+    #    Excepciones:
+    #      - EMA_CROSS: el cruce mismo confirma la dirección
+    #      - REVERSAL: el precio oscila alrededor de EMA20 1h durante toda
+    #        la recuperación inicial — exigirlo bloquearía todas las entradas.
+    #        Se registra como advertencia pero no bloquea.
+    omit_1h = signal_type == 'EMA_CROSS' or is_reversal
+    if omit_1h:
+        if is_reversal and signal_type != 'EMA_CROSS':
+            reasons.append('confirmación 1h omitida — régimen REVERSAL (oscilación normal)')
+        else:
+            reasons.append('confirmación 1h omitida (EMA_CROSS es suficiente)')
+    else:
         price_above_1h = d.get('price_above_ema20_1h')
         price_below_1h = d.get('price_below_ema20_1h')
 
@@ -302,8 +316,6 @@ def check_entry_conditions(symbol: str, market_data: dict, regime_info: dict) ->
                 reasons.append('precio < EMA20 1h ✓')
             else:
                 blockers.append('precio sobre EMA20 1h — sin confirmación intradiaria')
-    else:
-        reasons.append('confirmación 1h omitida (EMA_CROSS es suficiente)')
 
     qualified = len(blockers) == 0
     return {
