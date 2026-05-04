@@ -120,7 +120,7 @@ def analyze_veto(symbol: str, direction: str, conditions: dict,
 
     try:
         response = client.messages.create(
-            model="claude-haiku-4-20250514",
+            model="claude-haiku-4-5-20251001",
             max_tokens=150,
             system=SYSTEM_PROMPT_VETO,
             messages=[{"role": "user", "content": context}]

@@ -321,12 +321,14 @@ def _calc_sl_tp(symbol: str, direction: str, entry: float,
     return round(sl, 8), round(tp, 8)
 
 
-def execute_signal(signal: dict, market_data: dict, stop_pct: float = None) -> dict | None:
+def execute_signal(signal: dict, market_data: dict, stop_pct: float = None,
+                   max_trade_usd: float = None) -> dict | None:
     """
     Ejecuta una señal accionable en Binance.
     SL/TP calculado con ATR(14) 4h (coherente con la señal de entrada 4h).
     Trailing stop en runtime usa ATR 1h (ver main_async.py).
     Fallback a % fijo si ATR no disponible.
+    max_trade_usd: override del tamaño por operación (Grupo C). None = usa MAX_TRADE_USD.
     Retorna dict con resultado o None si no se ejecutó.
     """
     init_db()
@@ -345,8 +347,9 @@ def execute_signal(signal: dict, market_data: dict, stop_pct: float = None) -> d
         print(f"  [executor] Sin precio para {symbol} — abortando")
         return None
 
-    # Calcular cantidad a comprar (máximo MAX_TRADE_USD)
-    quantity_raw = MAX_TRADE_USD / current_price
+    # Tamaño de la operación — override por grupo si se especifica
+    trade_usd    = max_trade_usd if max_trade_usd else MAX_TRADE_USD
+    quantity_raw = trade_usd / current_price
 
     # TP sugerido por Claude (referencia; puede ser reemplazado por ATR)
     take_profit_signal = parse_price(signal.get('take_profit', ''))
