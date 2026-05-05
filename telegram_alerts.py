@@ -2,44 +2,15 @@
 #  CRYPTO AGENT — TELEGRAM ALERTS
 #  Envía mensajes y alertas al bot configurado
 # =============================================================
-
+ 
 import requests
 from datetime import datetime
 from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
-
-
+ 
+ 
 BASE_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
-
-# Traducción de regímenes al castellano
-REGIME_NOMBRES = {
-    "BULL_TREND": "Tendencia alcista",
-    "BEAR_TREND": "Tendencia bajista",
-    "SIDEWAYS":   "Movimiento lateral",
-    "REVERSAL":   "Recuperación",
-    "UNKNOWN":    "Desconocido",
-}
-
-# Traducción de direcciones al castellano
-DIRECTION_NOMBRES = {
-    "LONG":    "Compra",
-    "SHORT":   "Venta",
-    "NEUTRAL": "Neutral",
-}
-
-# Traducción del Fear & Greed al castellano
-FNG_NOMBRES = {
-    "Extreme Fear":   "Miedo extremo",
-    "Fear":           "Miedo",
-    "Neutral":        "Neutral",
-    "Greed":          "Codicia",
-    "Extreme Greed":  "Codicia extrema",
-}
-
-
-def _fng_label(label: str) -> str:
-    return FNG_NOMBRES.get(label, label)
-
-
+ 
+ 
 def send(text: str, silent: bool = False) -> bool:
     """Envía un mensaje de texto al chat configurado."""
     try:
@@ -57,152 +28,142 @@ def send(text: str, silent: bool = False) -> bool:
     except Exception as e:
         print(f"[Telegram ERROR] {e}")
         return False
-
-
+ 
+ 
 def send_startup() -> None:
     from config import SYMBOLS, MONITOR_INTERVAL_MINUTES, ANALYSIS_INTERVAL_MINUTES
-    simbolos_str  = " · ".join(s.replace("/USDT", "") for s in SYMBOLS)
-    monitor_str   = f"{MONITOR_INTERVAL_MINUTES} minutos"
-    analisis_str  = (
-        f"{ANALYSIS_INTERVAL_MINUTES // 60} horas"
-        if ANALYSIS_INTERVAL_MINUTES >= 60
-        else f"{ANALYSIS_INTERVAL_MINUTES} minutos"
-    )
+    symbols_str   = " · ".join(s.replace("/USDT", "") for s in SYMBOLS)
+    monitor_str   = f"{MONITOR_INTERVAL_MINUTES}min"
+    analysis_str  = f"{ANALYSIS_INTERVAL_MINUTES // 60}h" if ANALYSIS_INTERVAL_MINUTES >= 60 else f"{ANALYSIS_INTERVAL_MINUTES}min"
     send(
-        "🤖 <b>Agente de trading iniciado</b>\n"
-        f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
-        f"📡 Monitoreando: {simbolos_str}\n"
-        f"🔍 Control de posiciones cada {monitor_str}\n"
-        f"🧠 Análisis Claude cada {analisis_str}\n"
-        "────────────────────"
+        "🤖 <b>Crypto Agent iniciado</b>\n"
+        f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+        f"📡 Monitoreando {symbols_str}\n"
+        f"🔍 Monitor cada {monitor_str} · Análisis Claude cada {analysis_str}\n"
+        "────────────────────\n"
+        "🖥 <a href=\"https://cryptoagent.up.railway.app\">Ver dashboard</a>"
     )
-
-
+ 
+ 
 def send_signal(signal: dict, market_data: dict) -> None:
     """Formatea y envía una señal de trading."""
-    simbolo    = signal.get("symbol", "?")
-    direccion  = signal.get("direction", "?")
-    conviccion = signal.get("conviction", 0)
-    accionable = signal.get("actionable", False)
-
-    precio_actual = ""
-    if simbolo in market_data and "price" in market_data[simbolo]:
-        precio_actual = f"${market_data[simbolo]['price']:,.2f}"
-
-    dir_emoji  = {"LONG": "📈", "SHORT": "📉", "NEUTRAL": "➡️"}.get(direccion, "❓")
-    dir_nombre = DIRECTION_NOMBRES.get(direccion, direccion)
-    encabezado = "⚡ <b>SEÑAL ACCIONABLE</b>" if accionable else "👁 <b>SEÑAL NEUTRAL</b>"
-
+    sym = signal.get("symbol", "?")
+    direction = signal.get("direction", "?")
+    conviction = signal.get("conviction", 0)
+    actionable = signal.get("actionable", False)
+ 
+    price_now = ""
+    if sym in market_data and "price" in market_data[sym]:
+        price_now = f"${market_data[sym]['price']:,.2f}"
+ 
+    dir_emoji = {"LONG": "📈", "SHORT": "📉", "NEUTRAL": "➡️"}.get(direction, "❓")
+    action_tag = "⚡ <b>SEÑAL ACCIONABLE</b>" if actionable else "👁 <b>SEÑAL NEUTRAL</b>"
+ 
     msg = (
-        f"{encabezado}\n"
+        f"{action_tag}\n"
         f"────────────────────\n"
-        f"{dir_emoji} <b>{simbolo}</b>  →  <b>{dir_nombre}</b>\n"
-        f"💡 Convicción: {conviccion}/10\n"
-        f"💰 Precio actual: {precio_actual}\n"
-        f"🎯 Precio de entrada:   {signal.get('entry', 'No disponible')}\n"
-        f"🛑 Precio de stop loss: {signal.get('stop_loss', 'No disponible')}\n"
-        f"✅ Precio objetivo:     {signal.get('take_profit', 'No disponible')}\n"
-        f"⚖️ Ratio riesgo/beneficio: {signal.get('ratio', 'No disponible')}\n"
-        f"📝 Tesis: {signal.get('thesis', 'No disponible')}\n"
+        f"{dir_emoji} <b>{sym}</b>  →  <b>{direction}</b>\n"
+        f"💡 Convicción: {conviction}/10\n"
+        f"💰 Precio actual: {price_now}\n"
+        f"🎯 Entrada:      {signal.get('entry', 'N/A')}\n"
+        f"🛑 Stop-loss:    {signal.get('stop_loss', 'N/A')}\n"
+        f"✅ Take-profit:  {signal.get('take_profit', 'N/A')}\n"
+        f"⚖️ Ratio R/B:    {signal.get('ratio', 'N/A')}\n"
+        f"📝 Tesis: {signal.get('thesis', 'N/A')}\n"
         f"────────────────────\n"
-        f"🕐 {datetime.now().strftime('%H:%M:%S')}"
+        f"⏰ {datetime.now().strftime('%H:%M:%S')}"
     )
     send(msg)
-
-
+ 
+ 
 def send_cycle_summary(signals: list[dict], fng: dict, tokens_used: int,
                        balance_usdt: float = 0, regimes: dict = None) -> None:
     """Resumen al final de cada ciclo de análisis."""
-    accionables = [s for s in signals if s.get("actionable")]
-    neutrales   = [s for s in signals if not s.get("actionable")]
-
+    actionable = [s for s in signals if s.get("actionable")]
+    neutral    = [s for s in signals if not s.get("actionable")]
+ 
     regime_icons = {
-        "BULL_TREND": "📈",
-        "BEAR_TREND": "📉",
-        "SIDEWAYS":   "➡️",
-        "REVERSAL":   "🔄",
+        "BULL_TREND": "📈", "BEAR_TREND": "📉",
+        "SIDEWAYS":   "➡️",  "REVERSAL":   "🔄",
     }
-
-    lineas = [
-        "📊 <b>Resumen del ciclo de análisis</b>",
-        f"🧠 Índice Miedo y Codicia: {fng['value']}/100 ({_fng_label(fng['label'])})",
+ 
+    lines = [
+        "📊 <b>Resumen del ciclo (4h)</b>",
+        f"🧠 Fear &amp; Greed: {fng['value']}/100 ({fng['label']})",
     ]
-
+ 
     if regimes:
-        lineas.append("── Régimen de mercado (modelo HMM) ──")
-        for simbolo, info in regimes.items():
+        lines.append("── Régimen HMM ──")
+        for sym, info in regimes.items():
             if info.get("available"):
-                icono  = regime_icons.get(info["regime"], "❓")
-                nombre = REGIME_NOMBRES.get(info["regime"], info["regime"])
-                horas  = info["hours_in_regime"]
-                lineas.append(
-                    f"{icono} {simbolo}: <b>{nombre}</b> "
-                    f"({horas} horas consecutivas)"
+                icon = regime_icons.get(info["regime"], "❓")
+                lines.append(
+                    f"{icon} {sym}: <b>{info['regime']}</b> "
+                    f"({info['hours_in_regime']}h)"
                 )
-
-    lineas += [
+ 
+    lines += [
         "────────────────────",
-        f"⚡ Señales accionables: {len(accionables)}",
-        f"➡️ Señales neutrales: {len(neutrales)}",
-        f"💵 Saldo disponible en USDT: ${balance_usdt:,.2f}",
-        f"🔤 Tokens utilizados de Claude: {tokens_used}",
-        f"🕐 {datetime.now().strftime('%H:%M:%S')}",
+        f"⚡ Señales accionables: {len(actionable)}",
+        f"➡️ Neutrales: {len(neutral)}",
+        f"💵 Balance USDT: ${balance_usdt:,.2f}",
+        f"🔤 Tokens Claude: {tokens_used}",
+        f"⏰ {datetime.now().strftime('%H:%M:%S')}",
+        "🖥 <a href=\"https://cryptoagent.up.railway.app\">Ver dashboard</a>",
     ]
-    send("\n".join(lineas), silent=True)
-
-
+    send("\n".join(lines), silent=True)
+ 
+ 
 def send_error(context: str, error: str) -> None:
     send(
         f"⚠️ <b>Error en el agente</b>\n"
         f"📍 Contexto: {context}\n"
-        f"❌ Detalle: {error[:200]}"
+        f"❌ Error: {error[:200]}"
     )
-
-
+ 
+ 
 def send_daily_limit_hit(loss_usd: float) -> None:
     send(
-        f"🚨 <b>LÍMITE DIARIO DE PÉRDIDA ALCANZADO</b>\n"
-        f"💸 Pérdida acumulada en el día: ${loss_usd:.2f}\n"
+        f"🚨 <b>LÍMITE DIARIO ALCANZADO</b>\n"
+        f"💸 Pérdida del día: ${loss_usd:.2f}\n"
         f"🛑 El agente se detiene hasta mañana.\n"
-        f"📋 Revisá el registro antes de reiniciar."
+        f"📋 Revisá el log antes de reiniciar."
     )
-
-
+ 
+ 
 def send_trade_closed(trade: dict) -> None:
-    resultado  = trade.get("result", "?")
-    emoji      = "✅" if resultado == "WIN" else "🔴"
-    resultado_nombre = "Ganancia" if resultado == "WIN" else "Pérdida"
-    pnl        = trade.get("pnl_usd", 0)
-    pnl_signo  = "+" if pnl >= 0 else ""
-    direccion  = trade.get("direction", "")
-    dir_emoji  = {"LONG": "📈", "SHORT": "📉"}.get(direccion, "")
-    dir_nombre = DIRECTION_NOMBRES.get(direccion, direccion)
+    result    = trade.get("result", "?")
+    emoji     = "✅" if result == "WIN" else "🔴"
+    pnl       = trade.get("pnl_usd", 0)
+    pnl_sign  = "+" if pnl >= 0 else ""
+    dir_emoji = {"LONG": "📈", "SHORT": "📉"}.get(trade.get("direction"), "")
     send(
-        f"{emoji} <b>OPERACIÓN CERRADA — {trade['symbol']}</b>\n"
+        f"{emoji} <b>TRADE CERRADO — {trade['symbol']}</b>\n"
         f"────────────────────\n"
-        f"{dir_emoji} Dirección: {dir_nombre}\n"
-        f"📊 Resultado: <b>{resultado_nombre}</b>\n"
-        f"💰 Precio de entrada: ${trade['entry_price']:,.4f}\n"
-        f"🏁 Precio de salida:  ${trade['exit_price']:,.4f}\n"
-        f"💵 Ganancia / Pérdida: {pnl_signo}${pnl:.2f}\n"
-        f"🕐 {datetime.now().strftime('%H:%M:%S')}"
+        f"{dir_emoji} {trade['direction']} → <b>{result}</b>\n"
+        f"💰 Entrada:  ${trade['entry_price']:,.4f}\n"
+        f"🏁 Salida:   ${trade['exit_price']:,.4f}\n"
+        f"💵 PnL:      {pnl_sign}${pnl:.2f}\n"
+        f"⏰ {datetime.now().strftime('%H:%M:%S')}\n"
+        "🖥 <a href=\"https://cryptoagent.up.railway.app\">Ver dashboard</a>"
     )
-
-
+ 
+ 
 def send_execution_confirmation(result: dict) -> None:
-    direccion  = result.get("direction", "?")
-    dir_emoji  = {"LONG": "📈", "SHORT": "📉"}.get(direccion, "❓")
-    dir_nombre = DIRECTION_NOMBRES.get(direccion, direccion)
+    direction = result.get("direction", "?")
+    dir_emoji = {"LONG": "📈", "SHORT": "📉"}.get(direction, "❓")
     msg = (
         f"✅ <b>ORDEN EJECUTADA — {result['symbol']}</b>\n"
         f"────────────────────\n"
-        f"{dir_emoji} Dirección: {dir_nombre}\n"
-        f"💰 Precio de entrada:       ${result['entry_price']:,.4f}\n"
-        f"🛑 Precio de stop loss:     ${result['stop_loss']:,.4f}\n"
-        f"🎯 Precio objetivo:         ${result['take_profit']:,.4f}\n"
-        f"📦 Cantidad operada:        {result['quantity']} (aproximadamente ${result['usd_value']:.2f} dólares)\n"
-        f"🔑 Identificador de orden:  {result['order_id']}\n"
-        f"🗄 Número de operación:     #{result['trade_id']}\n"
-        f"🕐 {datetime.now().strftime('%H:%M:%S')}"
+        f"{dir_emoji} {direction}\n"
+        f"💰 Precio entrada:  ${result['entry_price']:,.4f}\n"
+        f"🛑 Stop-loss:       ${result['stop_loss']:,.4f}\n"
+        f"🎯 Take-profit:     ${result['take_profit']:,.4f}\n"
+        f"📦 Cantidad:        {result['quantity']} (~${result['usd_value']:.2f} USD)\n"
+        f"🔑 Order ID:        {result['order_id']}\n"
+        f"🗄 Trade DB ID:     #{result['trade_id']}\n"
+        f"⏰ {datetime.now().strftime('%H:%M:%S')}\n"
+        "🖥 <a href=\"https://cryptoagent.up.railway.app\">Ver dashboard</a>"
     )
     send(msg)
+ 
