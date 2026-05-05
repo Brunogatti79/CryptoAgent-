@@ -1,6 +1,3 @@
-
-Copiar
-
 # =============================================================
 #  CRYPTO AGENT — EXECUTOR
 #  Ejecuta órdenes en Binance Testnet cuando hay señal accionable
