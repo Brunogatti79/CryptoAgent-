@@ -347,8 +347,31 @@ def execute_signal(signal: dict, market_data: dict, stop_pct: float = None,
         print(f"  [executor] Sin precio para {symbol} — abortando")
         return None
  
-    # Tamaño de la operación — override por grupo si se especifica
-    trade_usd    = max_trade_usd if max_trade_usd else MAX_TRADE_USD
+    # ── Tamaño de la operación por convicción de señal ──────────
+    # Si se pasa max_trade_usd explícito (Grupo C), usarlo directamente.
+    # Si no, escalar según el tipo de señal:
+    #   EMA_CROSS              → 100% de MAX_TRADE_USD (señal más fuerte)
+    #   RSI_RECOVERY/REJECTION → 50%  de MAX_TRADE_USD
+    #   BULL/BEAR alineación   → 30%  de MAX_TRADE_USD
+    #   REVERSAL               → 10%  de MAX_TRADE_USD (señal más débil)
+    if max_trade_usd:
+        trade_usd = max_trade_usd
+    else:
+        signal_type = signal.get('signal_type') or signal.get('thesis', '')
+        is_rev      = signal.get('is_reversal', False)
+ 
+        if 'EMA_CROSS' in str(signal_type):
+            pct = 1.0    # 100% — señal más fuerte
+        elif 'RSI_RECOVERY' in str(signal_type) or 'RSI_REJECTION' in str(signal_type):
+            pct = 0.5    # 50%
+        elif is_rev:
+            pct = 0.1    # 10% — REVERSAL, mayor incertidumbre
+        else:
+            pct = 0.3    # 30% — BULL/BEAR alineación simple
+ 
+        trade_usd = round(MAX_TRADE_USD * pct, 2)
+ 
+    print(f"  [executor] Position sizing: ${trade_usd:.2f} ({int(trade_usd/MAX_TRADE_USD*100)}% de ${MAX_TRADE_USD})")
     quantity_raw = trade_usd / current_price
  
     # TP sugerido por Claude (referencia; puede ser reemplazado por ATR)
