@@ -302,7 +302,7 @@ def _calc_sl_tp(symbol: str, direction: str, entry: float,
                  else entry - atr_4h * ATR_MULT * 2
  
         print(
-            f"  [executor] ATR 4h={atr_4h:.4f} | ATR 1h={f'{atr_1h:.4f}' if atr_1h else 'N/A'} | "
+            f"  [executor] ATR 4h={atr_4h:.4f} | ATR 1h={atr_1h:.4f if atr_1h else 'N/A'} | "
             f"ratio={ratio:.2f}x → SL={sl:.4f} TP={tp:.4f}"
         )
     else:
@@ -321,14 +321,13 @@ def _calc_sl_tp(symbol: str, direction: str, entry: float,
     return round(sl, 8), round(tp, 8)
  
  
-def execute_signal(signal: dict, market_data: dict, stop_pct: float = None,
-                   max_trade_usd: float = None) -> dict | None:
+def execute_signal(signal: dict, market_data: dict, stop_pct: float = None) -> dict | None:
     """
     Ejecuta una señal accionable en Binance.
     SL/TP calculado con ATR(14) 4h (coherente con la señal de entrada 4h).
     Trailing stop en runtime usa ATR 1h (ver main_async.py).
     Fallback a % fijo si ATR no disponible.
-    max_trade_usd: override del tamaño por operación (Grupo C). None = usa MAX_TRADE_USD.
+    usd_override permite re-entry con sizing reducido (50% normal).
     Retorna dict con resultado o None si no se ejecutó.
     """
     init_db()
@@ -347,32 +346,9 @@ def execute_signal(signal: dict, market_data: dict, stop_pct: float = None,
         print(f"  [executor] Sin precio para {symbol} — abortando")
         return None
  
-    # ── Tamaño de la operación por convicción de señal ──────────
-    # Si se pasa max_trade_usd explícito (Grupo C), usarlo directamente.
-    # Si no, escalar según el tipo de señal:
-    #   EMA_CROSS              → 100% de MAX_TRADE_USD (señal más fuerte)
-    #   RSI_RECOVERY/REJECTION → 50%  de MAX_TRADE_USD
-    #   BULL/BEAR alineación   → 30%  de MAX_TRADE_USD
-    #   REVERSAL               → 10%  de MAX_TRADE_USD (señal más débil)
-    if max_trade_usd:
-        trade_usd = max_trade_usd
-    else:
-        signal_type = signal.get('signal_type') or signal.get('thesis', '')
-        is_rev      = signal.get('is_reversal', False)
- 
-        if 'EMA_CROSS' in str(signal_type):
-            pct = 1.0    # 100% — señal más fuerte
-        elif 'RSI_RECOVERY' in str(signal_type) or 'RSI_REJECTION' in str(signal_type):
-            pct = 0.5    # 50%
-        elif is_rev:
-            pct = 0.1    # 10% — REVERSAL, mayor incertidumbre
-        else:
-            pct = 0.3    # 30% — BULL/BEAR alineación simple
- 
-        trade_usd = round(MAX_TRADE_USD * pct, 2)
- 
-    print(f"  [executor] Position sizing: ${trade_usd:.2f} ({int(trade_usd/MAX_TRADE_USD*100)}% de ${MAX_TRADE_USD})")
-    quantity_raw = trade_usd / current_price
+    # Calcular cantidad a comprar — usd_override permite re-entry con sizing reducido
+    usd_to_use   = signal.get("usd_override", MAX_TRADE_USD)
+    quantity_raw = usd_to_use / current_price
  
     # TP sugerido por Claude (referencia; puede ser reemplazado por ATR)
     take_profit_signal = parse_price(signal.get('take_profit', ''))
@@ -386,7 +362,7 @@ def execute_signal(signal: dict, market_data: dict, stop_pct: float = None,
         precision = market['precision']['amount']
         quantity  = exchange.amount_to_precision(symbol, quantity_raw)
  
-        print(f"  [executor] Ejecutando {direction} {symbol} | qty: {quantity} | precio: ${current_price}")
+        print(f"  [executor] Ejecutando {direction} {symbol} | qty: {quantity} | precio: ${current_price} | USD: ${usd_to_use:.0f}")
  
         # Orden de mercado
         side  = 'buy' if direction == 'LONG' else 'sell'
@@ -440,47 +416,13 @@ def execute_signal(signal: dict, market_data: dict, stop_pct: float = None,
  
  
 def get_balance_usdt() -> float:
-    """
-    Calcula el balance USDT disponible desde la DB.
- 
-    Binance Testnet siempre devuelve ~$10,000 via API, sin importar
-    las operaciones reales — ese valor es completamente inútil para tracking.
- 
-    Fórmula:
-        balance = INITIAL_CAPITAL + realized_PnL - USD_en_posiciones_abiertas
- 
-    Asi el dashboard refleja el capital real disponible en todo momento.
-    """
+    """Retorna el balance de USDT disponible."""
     try:
-        from config import INITIAL_CAPITAL_USD
-    except ImportError:
-        INITIAL_CAPITAL_USD = 10_000.0
- 
-    try:
-        conn = sqlite3.connect(DB_PATH)
- 
-        # PnL realizado acumulado (trades cerrados WIN/LOSS)
-        row = conn.execute(
-            "SELECT COALESCE(SUM(pnl_usd), 0) FROM trades WHERE status IN ('WIN','LOSS')"
-        ).fetchone()
-        realized_pnl = float(row[0]) if row else 0.0
- 
-        # USD comprometido en posiciones abiertas
-        row = conn.execute(
-            "SELECT COALESCE(SUM(usd_value), 0) FROM trades WHERE status = 'OPEN'"
-        ).fetchone()
-        usd_in_open = float(row[0]) if row else 0.0
- 
-        conn.close()
- 
-        balance = INITIAL_CAPITAL_USD + realized_pnl - usd_in_open
-        print(f"  [executor] Balance USDT: ${balance:,.2f} "
-              f"(capital ${INITIAL_CAPITAL_USD:,.0f} + PnL ${realized_pnl:+.2f} "
-              f"- open ${usd_in_open:.2f})")
-        return round(balance, 2)
- 
+        exchange = get_exchange()
+        balance  = exchange.fetch_balance()
+        return float(balance['free'].get('USDT', 0))
     except Exception as e:
-        print(f"  [executor] ERROR calculando balance: {e}")
+        print(f"  [executor] ERROR obteniendo balance: {e}")
         return 0.0
  
  
