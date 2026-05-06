@@ -8,7 +8,7 @@ import os
 import threading
 import time
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
  
 import config
@@ -31,6 +31,10 @@ log = logging.getLogger(__name__)
 DASHBOARD_FILE = os.path.join(os.path.dirname(__file__), "dashboard_state.json")
 WEBROOT        = os.path.dirname(os.path.abspath(__file__))
  
+# Re-entry: cooldown de 2 velas 4h = 8h después de un stop-loss
+REENTRY_COOLDOWN_HOURS = 8
+REENTRY_USD_FACTOR     = 0.5   # 50% del MAX_TRADE_USD normal
+ 
 state = {
     "daily_loss_usd":    0.0,
     "halted":            False,
@@ -41,6 +45,8 @@ state = {
     "last_regimes":      {},          # {symbol: regime} — para detectar cambios
     "last_group_b_scan": None,        # date — para scan diario
     "group_b_symbols":   [],          # pares activos del Grupo B
+    "last_stop_loss":    {},          # {symbol: datetime} — para re-entry cooldown
+    "reentry_today":     {},          # {symbol: date} — máx 1 re-entry por par por día
     "pair_stats":        {sym: {"queries": 0, "actionable": 0, "discarded": 0, "last_signal": None,
                                 "last_conviction": 0, "last_regime": None, "last_price": 0,
                                 "last_rsi": 0, "last_trend": None}
@@ -54,6 +60,33 @@ def needs_analysis(symbol: str) -> bool:
     if last is None:
         return True
     return (datetime.now() - last).total_seconds() >= config.ANALYSIS_INTERVAL_MINUTES * 60
+ 
+ 
+def can_reentry(symbol: str) -> tuple[bool, float]:
+    """
+    Verifica si un par puede hacer re-entry después de un stop-loss.
+    Retorna (puede_reentrar, usd_override).
+    Condiciones:
+      - Pasaron al menos REENTRY_COOLDOWN_HOURS desde el stop
+      - No hubo ya un re-entry hoy para este par
+      - Solo Grupo A
+    """
+    stop_time = state["last_stop_loss"].get(symbol)
+    if not stop_time:
+        return False, 0.0
+ 
+    # Cooldown mínimo de 8h (2 velas 4h)
+    elapsed = (datetime.now() - stop_time).total_seconds() / 3600
+    if elapsed < REENTRY_COOLDOWN_HOURS:
+        return False, 0.0
+ 
+    # Máximo 1 re-entry por par por día
+    today = datetime.now().date()
+    if state["reentry_today"].get(symbol) == today:
+        return False, 0.0
+ 
+    usd = config.MAX_TRADE_USD * REENTRY_USD_FACTOR
+    return True, usd
  
  
 # ── Helpers ───────────────────────────────────────────────────
@@ -416,6 +449,10 @@ def run_cycle():
                           details={**ct, "reason": ct.get("reason", "stop/target")})
             if ct["result"] == "LOSS":
                 state["daily_loss_usd"] += abs(ct["pnl_usd"])
+                # Registrar timestamp del stop para habilitar re-entry
+                if ct["symbol"] in config.SYMBOLS:
+                    state["last_stop_loss"][ct["symbol"]] = datetime.now()
+                    log.info(f"  [re-entry] Stop registrado para {ct['symbol']} — re-entry habilitado en {REENTRY_COOLDOWN_HOURS}h")
                 if state["daily_loss_usd"] >= config.MAX_DAILY_LOSS_USD:
                     state["halted"] = True
                     tg.send_daily_limit_hit(state["daily_loss_usd"])
@@ -473,6 +510,14 @@ def run_cycle():
     blocked = [s for s in config.SYMBOLS if exc.has_open_position(s)]
     if blocked:
         log.info(f"  Skip análisis (posición abierta): {', '.join(blocked)}")
+ 
+    # Agregar pares en cooldown de re-entry que ya pasaron el tiempo mínimo
+    for sym in config.SYMBOLS:
+        if sym in free_a and sym not in due_a:
+            ok, _ = can_reentry(sym)
+            if ok:
+                due_a.append(sym)
+                log.info(f"  [re-entry] {sym} habilitado para re-entry (cooldown cumplido)")
  
     if due_a and not state["halted"]:
         for sym in due_a:
@@ -536,6 +581,9 @@ def run_cycle():
                                            "conditions": cond["reasons"]})
                     continue
  
+                # Determinar si es re-entry y el sizing correspondiente
+                is_reentry, usd_override = can_reentry(sym)
+ 
                 # Paso 3: señal aprobada — armar para ejecución
                 sig = {
                     "symbol":      sym,
@@ -549,16 +597,23 @@ def run_cycle():
                     "stop_loss":   "",
                     "signal_type": cond.get("signal_type", "ALIGNMENT"),
                     "is_reversal": cond.get("is_reversal", False),
+                    "is_reentry":  is_reentry,
                 }
+                if is_reentry and usd_override > 0:
+                    sig["usd_override"] = usd_override
+                    log.info(f"  [re-entry] {sym} — sizing reducido ${usd_override:.0f} (50% normal)")
+ 
                 signals.append(sig)
                 exc.log_event("CLAUDE_SIGNAL",
-                              f"{sym} → {cond['direction']} [{cond.get('signal_type')}] aprobado",
+                              f"{sym} → {cond['direction']} [{cond.get('signal_type')}] aprobado{'  [RE-ENTRY]' if is_reentry else ''}",
                               symbol=sym, group="A", level="WARNING",
                               details={**snapshot,
-                                       "qualified":   True,
-                                       "conviction":  9,
-                                       "conditions":  cond["reasons"],
-                                       "veto_reason": veto["reason"]})
+                                       "qualified":    True,
+                                       "conviction":   9,
+                                       "conditions":   cond["reasons"],
+                                       "veto_reason":  veto["reason"],
+                                       "is_reentry":   is_reentry,
+                                       "usd_override": usd_override if is_reentry else None})
  
             except Exception as e:
                 log.error(f"Error análisis A {sym}: {e}")
@@ -605,14 +660,13 @@ def run_cycle():
                               symbol=signal["symbol"], level="WARNING",
                               details={"fng": fng_value, "direction": "LONG"})
                 continue
-
             if signal["direction"] == "SHORT" and fng_value < 20:
                 log.info(f"  Skip {signal['symbol']} SHORT — F&G {fng_value} (Extreme Fear)")
                 exc.log_event("ENTRY_CHECK", f"{signal['symbol']} bloqueado — F&G {fng_value} Extreme Fear",
                               symbol=signal["symbol"], level="WARNING",
                               details={"fng": fng_value, "direction": "SHORT"})
                 continue
-
+ 
             # Gate BTC correlación — si BTC cayó >2% en 4h, bloqueamos LONGs en altcoins
             btc_change_4h = mkt.get("BTC/USDT", {}).get("change_4h", 0)
             is_altcoin    = signal["symbol"] != "BTC/USDT"
@@ -623,24 +677,25 @@ def run_cycle():
                               symbol=signal["symbol"], level="WARNING",
                               details={"btc_change_4h": btc_change_4h, "direction": "LONG"})
                 continue
-
+ 
             is_b     = signal.get("group") == "B"
-            stop_pct = config.STOP_LOSS_PCT_B   if is_b else config.STOP_LOSS_PCT
-            log.info(f"Ejecutando: {signal['symbol']} {signal['direction']} (Grupo {'B' if is_b else 'A'})")
+            stop_pct = config.STOP_LOSS_PCT_B if is_b else config.STOP_LOSS_PCT
+            log.info(f"Ejecutando: {signal['symbol']} {signal['direction']} (Grupo {'B' if is_b else 'A'}){' [RE-ENTRY]' if signal.get('is_reentry') else ''}")
             signal["group_name"] = "B" if is_b else "A"
             res = exc.execute_signal(signal, mkt, stop_pct=stop_pct)
             if res:
+                # Si fue re-entry exitoso, registrar para limitar a 1 por día
+                if signal.get("is_reentry"):
+                    state["reentry_today"][signal["symbol"]] = datetime.now().date()
+                    state["last_stop_loss"].pop(signal["symbol"], None)
                 tg.send_execution_confirmation(res)
                 exc.log_event("TRADE_OPEN",
-                              f"{res['symbol']} {res['direction']} @ ${res['entry_price']:,.4f}",
+                              f"{res['symbol']} {res['direction']} @ ${res['entry_price']:,.4f}{'  [RE-ENTRY]' if signal.get('is_reentry') else ''}",
                               symbol=res["symbol"], group=signal["group_name"], level="INFO",
-                              details={**res, "group": signal["group_name"]})
+                              details={**res, "group": signal["group_name"],
+                                       "is_reentry": signal.get("is_reentry", False)})
             else:
                 log.warning(f"No ejecutado: {signal['symbol']}")
-    actionable = [s for s in signals if s.get("actionable")]
-    if actionable:
-        for sig in actionable:
-            tg.send_signal(sig, mkt)
  
     # 8. Actualizar contadores y estado
     _update_pair_stats(signals, mkt, regimes)
