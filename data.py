@@ -257,10 +257,26 @@ def check_entry_conditions(symbol: str, market_data: dict, regime_info: dict) ->
     # 4. RSI — rango más amplio si hay señal fuerte o régimen REVERSAL
     # En REVERSAL el RSI suele estar en 38–52 durante la recuperación inicial,
     # usar mínimo 42 bloquearía exactamente las entradas más valiosas.
-    rsi_max_long  = 72 if signal_type in ('EMA_CROSS',)        else 65
-    rsi_min_long  = 35 if signal_type in ('RSI_RECOVERY',)     else (38 if is_reversal else 42)
-    rsi_min_short = 28 if signal_type in ('EMA_CROSS',)        else 35
-    rsi_max_short = 65 if signal_type in ('RSI_REJECTION',)    else 58
+    # Umbrales calibrados por backtest (backtest_regimen.py — mayo 2026)
+    # BULL_TREND: RSI más ajustado (60 max), volumen más exigente (1.5x)
+    # BEAR_TREND: RSI más amplio (32-60), volumen relajado (1.0x)
+    # EMA_CROSS: sin cambio — muestra insuficiente (<6 trades) para recalibrar
+    if regime == 'BULL_TREND':
+        rsi_max_long  = 72 if signal_type == 'EMA_CROSS' else 60
+        rsi_min_long  = 45 if signal_type == 'RSI_RECOVERY' else 42
+        rsi_min_short = 28 if signal_type == 'EMA_CROSS' else 35
+        rsi_max_short = 65 if signal_type == 'RSI_REJECTION' else 55
+    elif regime == 'REVERSAL':
+        # Recuperación post-bear: RSI suele estar 38-55, umbrales relajados
+        rsi_max_long  = 65
+        rsi_min_long  = 38
+        rsi_min_short = 35  # no aplica en REVERSAL pero necesita valor
+        rsi_max_short = 58
+    else:  # BEAR_TREND
+        rsi_max_long  = 72 if signal_type == 'EMA_CROSS' else 60
+        rsi_min_long  = 32
+        rsi_min_short = 25 if signal_type == 'EMA_CROSS' else 32
+        rsi_max_short = 65 if signal_type == 'RSI_REJECTION' else 58
 
     if direction == 'LONG':
         if rsi_min_long <= rsi <= rsi_max_long:
