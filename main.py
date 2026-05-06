@@ -611,6 +611,28 @@ def run_cycle():
                               symbol=signal["symbol"], level="WARNING",
                               details={"fng": fng_value, "direction": "SHORT"})
                 continue
+# Gate BTC correlación — si BTC cayó >2% en 4h, bloqueamos LONGs en altcoins
+            btc_change_4h = mkt.get("BTC/USDT", {}).get("change_4h", 0)
+            is_altcoin    = signal["symbol"] != "BTC/USDT"
+            if signal["direction"] == "LONG" and is_altcoin and btc_change_4h < -2.0:
+                log.info(f"  Skip {signal['symbol']} LONG — BTC cayó {btc_change_4h:.1f}% en 4h (contagio)")
+                exc.log_event("ENTRY_CHECK",
+                              f"{signal['symbol']} bloqueado — BTC {btc_change_4h:.1f}% en 4h",
+                              symbol=signal["symbol"], level="WARNING",
+                              details={"btc_change_4h": btc_change_4h, "direction": "LONG"})
+                continue
+
+             # Gate BTC correlación — si BTC cayó >2% en 4h, bloqueamos LONGs en altcoins
+            btc_change_4h = mkt.get("BTC/USDT", {}).get("change_4h", 0)
+            is_altcoin    = signal["symbol"] != "BTC/USDT"
+            if signal["direction"] == "LONG" and is_altcoin and btc_change_4h < -2.0:
+                log.info(f"  Skip {signal['symbol']} LONG — BTC cayó {btc_change_4h:.1f}% en 4h (contagio)")
+                exc.log_event("ENTRY_CHECK",
+                              f"{signal['symbol']} bloqueado — BTC {btc_change_4h:.1f}% en 4h",
+                              symbol=signal["symbol"], level="WARNING",
+                              details={"btc_change_4h": btc_change_4h, "direction": "LONG"})
+                continue
+
             is_b     = signal.get("group") == "B"
             stop_pct = config.STOP_LOSS_PCT_B   if is_b else config.STOP_LOSS_PCT
             log.info(f"Ejecutando: {signal['symbol']} {signal['direction']} (Grupo {'B' if is_b else 'A'})")
@@ -624,7 +646,6 @@ def run_cycle():
                               details={**res, "group": signal["group_name"]})
             else:
                 log.warning(f"No ejecutado: {signal['symbol']}")
- 
     actionable = [s for s in signals if s.get("actionable")]
     if actionable:
         for sig in actionable:
