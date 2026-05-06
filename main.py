@@ -605,24 +605,15 @@ def run_cycle():
                               symbol=signal["symbol"], level="WARNING",
                               details={"fng": fng_value, "direction": "LONG"})
                 continue
+
             if signal["direction"] == "SHORT" and fng_value < 20:
                 log.info(f"  Skip {signal['symbol']} SHORT — F&G {fng_value} (Extreme Fear)")
                 exc.log_event("ENTRY_CHECK", f"{signal['symbol']} bloqueado — F&G {fng_value} Extreme Fear",
                               symbol=signal["symbol"], level="WARNING",
                               details={"fng": fng_value, "direction": "SHORT"})
                 continue
-# Gate BTC correlación — si BTC cayó >2% en 4h, bloqueamos LONGs en altcoins
-            btc_change_4h = mkt.get("BTC/USDT", {}).get("change_4h", 0)
-            is_altcoin    = signal["symbol"] != "BTC/USDT"
-            if signal["direction"] == "LONG" and is_altcoin and btc_change_4h < -2.0:
-                log.info(f"  Skip {signal['symbol']} LONG — BTC cayó {btc_change_4h:.1f}% en 4h (contagio)")
-                exc.log_event("ENTRY_CHECK",
-                              f"{signal['symbol']} bloqueado — BTC {btc_change_4h:.1f}% en 4h",
-                              symbol=signal["symbol"], level="WARNING",
-                              details={"btc_change_4h": btc_change_4h, "direction": "LONG"})
-                continue
 
-             # Gate BTC correlación — si BTC cayó >2% en 4h, bloqueamos LONGs en altcoins
+            # Gate BTC correlación — si BTC cayó >2% en 4h, bloqueamos LONGs en altcoins
             btc_change_4h = mkt.get("BTC/USDT", {}).get("change_4h", 0)
             is_altcoin    = signal["symbol"] != "BTC/USDT"
             if signal["direction"] == "LONG" and is_altcoin and btc_change_4h < -2.0:
