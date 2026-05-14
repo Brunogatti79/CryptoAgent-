@@ -325,11 +325,17 @@ def check_entry_conditions(symbol: str, market_data: dict, regime_info: dict) ->
         if signal_type != 'EMA_CROSS':
             blockers.append(f'EMA {trend} no alinea con {direction}')
  
-    # 4. RSI — rango más amplio si hay señal fuerte
-    rsi_max_long  = 72 if signal_type in ('EMA_CROSS',)        else 65
-    rsi_min_long  = 35 if signal_type in ('RSI_RECOVERY',)     else 42
-    rsi_min_short = 28 if signal_type in ('EMA_CROSS',)        else 35
-    rsi_max_short = 65 if signal_type in ('RSI_REJECTION',)    else 58
+# 4. RSI — umbrales calibrados por backtest (mayo 2026)
+    if regime == 'BULL_TREND':
+        rsi_max_long  = 72 if signal_type == 'EMA_CROSS' else 60
+        rsi_min_long  = 45 if signal_type == 'RSI_RECOVERY' else 42
+        rsi_min_short = 28 if signal_type == 'EMA_CROSS' else 35
+        rsi_max_short = 65 if signal_type == 'RSI_REJECTION' else 55
+    else:  # BEAR_TREND
+        rsi_max_long  = 72 if signal_type == 'EMA_CROSS' else 60
+        rsi_min_long  = 32
+        rsi_min_short = 25 if signal_type == 'EMA_CROSS' else 32
+        rsi_max_short = 65 if signal_type == 'RSI_REJECTION' else 58
  
     if direction == 'LONG':
         rsi_min, rsi_max = rsi_min_long, rsi_max_long
