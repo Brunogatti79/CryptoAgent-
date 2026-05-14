@@ -585,11 +585,26 @@ def run_cycle():
                 is_reentry, usd_override = can_reentry(sym)
  
                 # Paso 3: señal aprobada — armar para ejecución
+                # v3: conviction viene de check_entry_conditions (mecánico, no hardcoded)
+                conv = cond.get("conviction", 5)
+                is_actionable = conv >= config.MIN_SIGNAL_CONVICTION
+ 
+                if not is_actionable:
+                    log.info(f"  [A] {sym} conviction {conv}/10 < mín {config.MIN_SIGNAL_CONVICTION} — señal débil, no ejecutar")
+                    exc.log_event("CONVICTION_LOW",
+                                  f"{sym} conviction {conv}/10 — bajo mínimo",
+                                  symbol=sym, group="A", level="INFO",
+                                  details={**snapshot,
+                                           "conviction": conv,
+                                           "conviction_details": cond.get("conviction_details", []),
+                                           "min_required": config.MIN_SIGNAL_CONVICTION,
+                                           "conditions": cond["reasons"]})
+ 
                 sig = {
                     "symbol":      sym,
                     "direction":   cond["direction"],
-                    "conviction":  9,
-                    "actionable":  True,
+                    "conviction":  conv,
+                    "actionable":  is_actionable,
                     "thesis":      f"[{cond.get('signal_type')}] {', '.join(cond['reasons'])}",
                     "group":       "A",
                     "group_name":  "A",
@@ -604,16 +619,19 @@ def run_cycle():
                     log.info(f"  [re-entry] {sym} — sizing reducido ${usd_override:.0f} (50% normal)")
  
                 signals.append(sig)
+ 
+                level = "WARNING" if is_actionable else "INFO"
                 exc.log_event("CLAUDE_SIGNAL",
-                              f"{sym} → {cond['direction']} [{cond.get('signal_type')}] aprobado{'  [RE-ENTRY]' if is_reentry else ''}",
-                              symbol=sym, group="A", level="WARNING",
+                              f"{sym} → {cond['direction']} [{cond.get('signal_type')}] conv={conv}/10{'✓' if is_actionable else ' (débil)'}{'  [RE-ENTRY]' if is_reentry else ''}",
+                              symbol=sym, group="A", level=level,
                               details={**snapshot,
-                                       "qualified":    True,
-                                       "conviction":   9,
-                                       "conditions":   cond["reasons"],
-                                       "veto_reason":  veto["reason"],
-                                       "is_reentry":   is_reentry,
-                                       "usd_override": usd_override if is_reentry else None})
+                                       "qualified":          True,
+                                       "conviction":         conv,
+                                       "conviction_details": cond.get("conviction_details", []),
+                                       "conditions":         cond["reasons"],
+                                       "veto_reason":        veto["reason"],
+                                       "is_reentry":         is_reentry,
+                                       "usd_override":       usd_override if is_reentry else None})
  
             except Exception as e:
                 log.error(f"Error análisis A {sym}: {e}")
