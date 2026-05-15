@@ -8,11 +8,15 @@ Responsabilidades exclusivas de este módulo:
   1. Binance WebSocket → precios en tiempo real (core/binance_ws.py)
   2. TrailingStop ATR-based → cierre automático de posiciones (strategies/trailing_stop.py)
  
-v3: Fix — _on_price pasa direction a update_on_price para manejar SHORT correctamente.
+La lógica de análisis (Claude + régimen HMM) sigue en main.py hasta Fase 2.
  
 Arranque:
     python main_async.py          # solo trailing stop
     ASYNC_ENABLED=true             # necesario; si no está, este módulo no hace nada
+ 
+Integración con main.py:
+    main.py llama a asyncio.run(run_trailing_engine()) al final de su propio loop,
+    o bien se lanza como proceso separado con Procfile.
 """
  
 import asyncio
@@ -39,6 +43,7 @@ from executor import (
     init_db,
     market_close_trade,
     get_trade_by_id,
+    update_mfe_mae,
 )
 from persistence.db_manager import migrate, get_open_trades_async, close_trade_async
 from strategies.trailing_stop import TrailingStopManager
@@ -46,6 +51,10 @@ from strategies.trailing_stop import TrailingStopManager
 # ── Configuración ────────────────────────────────────────────
 DB_PATH         = os.path.join(os.getenv("DATA_DIR", "."), "trades.db")
 ASYNC_ENABLED   = os.getenv("ASYNC_ENABLED", "false").lower() == "true"
+ 
+# Incluir Group B symbols si hay posiciones abiertas de cualquier símbolo
+# El WS suscribe a todos los symbols de la DB + SYMBOLS base
+# Se refresca cada vez que hay un nuevo trade
  
  
 # ═══════════════════════════════════════════════════════════════
@@ -99,9 +108,8 @@ class TrailingEngine:
         """
         Recibe cada tick del WebSocket.
         1. Inicializa stops de trades recién abiertos que aún no tienen stop ATR.
-        2. Llama update_on_price con direction → si toca stop, cierra la posición.
- 
-        v3: pasa direction explícitamente para que SHORT funcione correctamente.
+        2. Actualiza MFE/MAE (max favorable/adverse excursion) para análisis posterior.
+        3. Llama update_on_price → si toca stop, cierra la posición.
         """
         # Buscar trades abiertos en este símbolo
         trades = _get_open_trades_for_symbol(symbol)
@@ -113,12 +121,16 @@ class TrailingEngine:
                 stop = await self._ts_manager.initialize_stop(trade)
                 if stop is not None:
                     self._initialized_ids.add(tid)
-                    log.info(f"[Engine] Stop inicializado #{tid} {symbol} {trade['direction']} @ {stop:.4f}")
+                    log.info(f"[Engine] Stop inicializado #{tid} {symbol} @ {stop:.4f}")
                 continue  # el primer tick solo inicializa
  
+            # Actualizar MFE/MAE con high/low del tick actual
+            # (ejecutar en thread pool para no bloquear el event loop)
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, update_mfe_mae, tid, high, low)
+ 
             # Actualizar trailing y verificar si tocó
-            # v3: pasamos direction para que SHORT funcione correctamente
-            hit = self._ts_manager.update_on_price(tid, price, direction=trade["direction"])
+            hit = self._ts_manager.update_on_price(tid, price)
             if hit:
                 await self._close_by_trailing(trade, price)
  
@@ -130,7 +142,7 @@ class TrailingEngine:
         symbol  = trade["symbol"]
         stop    = self._ts_manager.get_stop(tid)
  
-        log.info(f"[Engine] TRAILING STOP HIT #{tid} {symbol} {trade['direction']} @ {current_price:.4f} (stop={stop})")
+        log.info(f"[Engine] TRAILING STOP HIT #{tid} {symbol} @ {current_price:.4f} (stop={stop})")
  
         # Cerrar en la DB con precio actual (el stop fue tocado exactamente)
         exit_price = stop if stop else current_price
