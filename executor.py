@@ -2,14 +2,15 @@
 #  CRYPTO AGENT — EXECUTOR
 #  Ejecuta órdenes en Binance Testnet cuando hay señal accionable
 #
-#  v3: R:B adaptativo por régimen + re-entry cooldown
+#  v2: Position sizing por volatilidad (ATR-based risk)
+#      + metadata por trade (signal_type, regime, atr)
 # =============================================================
  
 import json
 import os
 import sqlite3
 import ccxt
-from datetime import datetime, timedelta
+from datetime import datetime
 from config import (
     BINANCE_API_KEY, BINANCE_API_SECRET, BINANCE_TESTNET,
     MAX_TRADE_USD, MAX_OPEN_POSITIONS
@@ -18,11 +19,15 @@ from config import (
 # Railway Volume en /data, fallback a directorio local
 DB_PATH = os.path.join(os.getenv('DATA_DIR', '.'), 'trades.db')
  
-# ── Re-entry cooldown ────────────────────────────────────────
-# Después de un stop-loss, esperar este tiempo antes de reabrir el mismo par.
-# Sizing reducido al 50% en la re-entrada.
-REENTRY_COOLDOWN_HOURS = 8
-REENTRY_SIZE_MULT      = 0.5   # 50% del sizing normal
+# ── Sizing por riesgo ─────────────────────────────────────────
+# RISK_PER_TRADE: fracción del capital que se arriesga por trade.
+# Si el capital es $10,000 y RISK_PER_TRADE=0.01, se arriesgan $100.
+# La posición se dimensiona para que la distancia al SL = ese riesgo.
+# MAX_TRADE_USD sigue como cap absoluto de seguridad.
+RISK_PER_TRADE = float(os.getenv('RISK_PER_TRADE', '0.01'))  # 1% default
+ 
+# Capital inicial para el cálculo de balance desde DB
+INITIAL_CAPITAL = float(os.getenv('INITIAL_CAPITAL', '10000'))
  
  
 # ── Conexión al exchange ──────────────────────────────────────
@@ -70,12 +75,18 @@ def init_db():
         conn.execute("ALTER TABLE trades ADD COLUMN group_name TEXT DEFAULT 'A'")
     except Exception:
         pass
-    # Migración v3: agregar columnas para trailing stop
-    for col, default in [("trailing_stop_price", "NULL"), ("atr_value", "NULL")]:
+ 
+    # ── Migraciones v2: metadata para expectancy analysis ─────
+    _migrations = [
+        ("signal_type",     "TEXT"),
+        ("regime_at_entry", "TEXT"),
+        ("atr_at_entry",    "REAL"),
+    ]
+    for col, dtype in _migrations:
         try:
-            conn.execute(f"ALTER TABLE trades ADD COLUMN {col} REAL DEFAULT {default}")
+            conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {dtype}")
         except Exception:
-            pass
+            pass  # columna ya existe
  
     conn.execute('''
         CREATE TABLE IF NOT EXISTS events (
@@ -145,13 +156,16 @@ def save_trade(trade: dict) -> int:
     cur = conn.execute('''
         INSERT INTO trades
         (symbol, direction, conviction, entry_price, stop_loss, take_profit,
-         quantity, usd_value, order_id, status, opened_at, group_name)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?)
+         quantity, usd_value, order_id, status, opened_at, group_name,
+         signal_type, regime_at_entry, atr_at_entry)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, ?, ?, ?)
     ''', (
         trade['symbol'], trade['direction'], trade['conviction'],
         trade['entry_price'], trade['stop_loss'], trade['take_profit'],
         trade['quantity'], trade['usd_value'], trade['order_id'],
-        datetime.now().isoformat(), trade.get('group_name', 'A')
+        datetime.now().isoformat(), trade.get('group_name', 'A'),
+        trade.get('signal_type'), trade.get('regime_at_entry'),
+        trade.get('atr_at_entry'),
     ))
     trade_id = cur.lastrowid
     conn.commit()
@@ -222,69 +236,6 @@ def get_trade_by_id(trade_id: int) -> dict | None:
     }
  
  
-# ── Re-entry cooldown (v3) ───────────────────────────────────
- 
-def _check_reentry_cooldown(symbol: str) -> dict:
-    """
-    Verifica si el par está en cooldown después de un stop-loss reciente.
- 
-    Retorna:
-        {
-            'allowed': bool,       — True si puede abrir
-            'is_reentry': bool,    — True si es re-entrada (sizing reducido)
-            'cooldown_until': str, — timestamp hasta cuándo hay cooldown (si aplica)
-            'last_loss_ago_h': float — horas desde el último SL
-        }
-    """
-    conn = sqlite3.connect(DB_PATH)
-    row = conn.execute(
-        """SELECT closed_at FROM trades
-           WHERE symbol=? AND status='LOSS' AND closed_at IS NOT NULL
-           ORDER BY closed_at DESC LIMIT 1""",
-        (symbol,)
-    ).fetchone()
-    conn.close()
- 
-    if not row or not row[0]:
-        return {'allowed': True, 'is_reentry': False,
-                'cooldown_until': None, 'last_loss_ago_h': None}
- 
-    try:
-        last_loss_time = datetime.fromisoformat(row[0])
-    except (ValueError, TypeError):
-        return {'allowed': True, 'is_reentry': False,
-                'cooldown_until': None, 'last_loss_ago_h': None}
- 
-    now = datetime.now()
-    hours_since = (now - last_loss_time).total_seconds() / 3600
-    cooldown_end = last_loss_time + timedelta(hours=REENTRY_COOLDOWN_HOURS)
- 
-    if hours_since < REENTRY_COOLDOWN_HOURS:
-        # Todavía en cooldown — NO permitir
-        return {
-            'allowed': False,
-            'is_reentry': True,
-            'cooldown_until': cooldown_end.isoformat(),
-            'last_loss_ago_h': round(hours_since, 1),
-        }
-    elif hours_since < REENTRY_COOLDOWN_HOURS * 3:
-        # Pasó el cooldown pero es reciente — permitir con sizing reducido
-        return {
-            'allowed': True,
-            'is_reentry': True,
-            'cooldown_until': None,
-            'last_loss_ago_h': round(hours_since, 1),
-        }
-    else:
-        # Más de 24h desde el último SL — operación normal
-        return {
-            'allowed': True,
-            'is_reentry': False,
-            'cooldown_until': None,
-            'last_loss_ago_h': round(hours_since, 1),
-        }
- 
- 
 def market_close_trade(trade: dict, current_price: float, reason: str) -> dict:
     """
     Cierra un trade al precio de mercado (no espera stop/target).
@@ -336,18 +287,44 @@ def parse_price(value: str) -> float:
     return float(nums[0]) if nums else 0.0
  
  
-# ── Ejecución principal ───────────────────────────────────────
+# ── Balance calculado desde DB ────────────────────────────────
+ 
+def get_available_capital() -> float:
+    """
+    Calcula el capital disponible para sizing:
+      capital_inicial + PnL realizado − exposición de posiciones abiertas.
+ 
+    Esto es el capital "libre" que se puede usar para calcular riesgo.
+    NO usa Binance API — es determinístico desde la DB.
+    """
+    conn = sqlite3.connect(DB_PATH)
+ 
+    # PnL realizado total (trades cerrados)
+    row = conn.execute(
+        "SELECT COALESCE(SUM(pnl_usd), 0) FROM trades WHERE status IN ('WIN', 'LOSS')"
+    ).fetchone()
+    realized_pnl = float(row[0])
+ 
+    # Exposición abierta (USD comprometidos en posiciones OPEN)
+    row = conn.execute(
+        "SELECT COALESCE(SUM(usd_value), 0) FROM trades WHERE status = 'OPEN'"
+    ).fetchone()
+    open_exposure = float(row[0])
+ 
+    conn.close()
+ 
+    available = INITIAL_CAPITAL + realized_pnl - open_exposure
+    return max(available, 0)  # nunca negativo
+ 
+ 
+# ── Cálculo de SL/TP ─────────────────────────────────────────
  
 def _calc_sl_tp(symbol: str, direction: str, entry: float,
-                stop_pct: float, take_profit_signal: float,
-                regime: str = None) -> tuple[float, float]:
+                stop_pct: float, take_profit_signal: float) -> tuple[float, float]:
     """
     Calcula SL/TP usando ATR(14) 4h — mismo timeframe que la señal de entrada.
- 
-    v3: R:B adaptativo por régimen.
-      - BULL_TREND:  SL = ATR×1.5, TP = ATR×1.5×2.0 → ratio 2:1
-      - BEAR_TREND:  SL = ATR×1.5, TP = ATR×1.5×3.0 → ratio 3:1
-      - REVERSAL:    SL = ATR×1.5, TP = ATR×1.5×2.5 → ratio 2.5:1
+    Esto evita que stops calculados con ATR 1h (más ajustado) sean triggeados
+    por ruido intradiario antes de que la tesis 4h se desarrolle.
  
     Roles de timeframe en el sistema:
       - ATR 4h → SL/TP inicial (este cálculo) — coherente con la tesis de entrada
@@ -355,10 +332,7 @@ def _calc_sl_tp(symbol: str, direction: str, entry: float,
  
     Fallback a porcentaje fijo si ATR no disponible.
     """
-    from strategies.trailing_stop import calc_atr_multi, ATR_MULT, REGIME_TP_MULT, DEFAULT_TP_MULT
- 
-    # Determinar multiplicador de TP según régimen
-    tp_mult = REGIME_TP_MULT.get(regime, DEFAULT_TP_MULT) if regime else DEFAULT_TP_MULT
+    from strategies.trailing_stop import calc_atr_multi, ATR_MULT
  
     # Calcular ATR en 4h y 1h simultáneamente
     atr_data = calc_atr_multi(symbol, period=14)
@@ -375,21 +349,19 @@ def _calc_sl_tp(symbol: str, direction: str, entry: float,
         )
  
     if atr_4h and atr_4h > 0:
-        # ── SL/TP basado en ATR 4h con R:B adaptativo ────────
+        # ── SL/TP basado en ATR 4h ──────────────────────────────
         if direction == 'LONG':
             sl = entry - atr_4h * ATR_MULT
             tp = take_profit_signal if take_profit_signal > entry \
-                 else entry + atr_4h * ATR_MULT * tp_mult
+                 else entry + atr_4h * ATR_MULT * 2
         else:
             sl = entry + atr_4h * ATR_MULT
             tp = take_profit_signal if 0 < take_profit_signal < entry \
-                 else entry - atr_4h * ATR_MULT * tp_mult
+                 else entry - atr_4h * ATR_MULT * 2
  
-        regime_str = regime or 'UNKNOWN'
         print(
             f"  [executor] ATR 4h={atr_4h:.4f} | ATR 1h={atr_1h:.4f if atr_1h else 'N/A'} | "
-            f"ratio={ratio:.2f}x | régimen={regime_str} → "
-            f"R:B={tp_mult}:1 | SL={sl:.4f} TP={tp:.4f}"
+            f"ratio={ratio:.2f}x → SL={sl:.4f} TP={tp:.4f}"
         )
     else:
         # ── Fallback a porcentaje fijo ──────────────────────────
@@ -397,26 +369,88 @@ def _calc_sl_tp(symbol: str, direction: str, entry: float,
         if direction == 'LONG':
             sl = entry * (1 - pct)
             tp = take_profit_signal if take_profit_signal > entry \
-                 else entry * (1 + pct * tp_mult)
+                 else entry * (1 + pct * 2)
         else:
             sl = entry * (1 + pct)
             tp = take_profit_signal if 0 < take_profit_signal < entry \
-                 else entry * (1 - pct * tp_mult)
-        print(f"  [executor] ATR 4h no disponible — usando pct={pct:.1%} R:B={tp_mult}:1 → SL={sl:.4f} TP={tp:.4f}")
+                 else entry * (1 - pct * 2)
+        print(f"  [executor] ATR 4h no disponible — usando pct={pct:.1%} → SL={sl:.4f} TP={tp:.4f}")
  
     return round(sl, 8), round(tp, 8)
  
  
-def execute_signal(signal: dict, market_data: dict, stop_pct: float = None,
-                   regime: str = None) -> dict | None:
+# ── Sizing por volatilidad ────────────────────────────────────
+ 
+def _calc_position_size(symbol: str, current_price: float,
+                        atr_4h: float | None, stop_pct: float | None) -> dict:
+    """
+    Calcula el tamaño de posición basado en riesgo por volatilidad.
+ 
+    Lógica:
+      1. risk_usd = capital_disponible × RISK_PER_TRADE (1% default)
+      2. distance_to_sl = ATR_4h × 1.5  (o fallback a % fijo)
+      3. quantity = risk_usd / distance_to_sl
+      4. cap: nunca excede MAX_TRADE_USD
+ 
+    Retorna:
+      {quantity, usd_value, risk_usd, distance_sl, sizing_method, capped}
+    """
+    from strategies.trailing_stop import ATR_MULT
+ 
+    capital   = get_available_capital()
+    risk_usd  = capital * RISK_PER_TRADE
+ 
+    # Distancia al SL (en precio, no en %)
+    if atr_4h and atr_4h > 0:
+        distance_sl   = atr_4h * ATR_MULT
+        sizing_method = 'ATR'
+    else:
+        pct           = stop_pct or 0.04
+        distance_sl   = current_price * pct
+        sizing_method = 'PCT'
+ 
+    # Quantity basada en riesgo
+    if distance_sl <= 0:
+        # Protección: si por alguna razón distance es 0, usar sizing fijo
+        quantity_raw = MAX_TRADE_USD / current_price
+        sizing_method = 'FIXED_FALLBACK'
+    else:
+        quantity_raw = risk_usd / distance_sl
+ 
+    # USD value antes del cap
+    usd_value_raw = quantity_raw * current_price
+ 
+    # Cap: nunca exceder MAX_TRADE_USD (protección contra ATR muy bajo)
+    capped = usd_value_raw > MAX_TRADE_USD
+    if capped:
+        quantity_raw  = MAX_TRADE_USD / current_price
+        usd_value_raw = MAX_TRADE_USD
+ 
+    return {
+        'quantity':       quantity_raw,
+        'usd_value':      round(usd_value_raw, 2),
+        'risk_usd':       round(risk_usd, 2),
+        'distance_sl':    round(distance_sl, 6),
+        'capital':        round(capital, 2),
+        'sizing_method':  sizing_method,
+        'capped':         capped,
+    }
+ 
+ 
+# ── Ejecución principal ───────────────────────────────────────
+ 
+def execute_signal(signal: dict, market_data: dict, stop_pct: float = None) -> dict | None:
     """
     Ejecuta una señal accionable en Binance.
  
-    v3:
-      - SL/TP con R:B adaptativo por régimen
-      - Re-entry cooldown: 8h después de SL, sizing 50%
-      - Conviction funcional desde Haiku confidence score
+    Sizing v2: posición dimensionada por riesgo (ATR-based).
+      - risk_usd = 1% del capital disponible
+      - quantity = risk_usd / distancia_al_SL
+      - cap: MAX_TRADE_USD como límite de seguridad
  
+    SL/TP calculado con ATR(14) 4h (coherente con la señal de entrada 4h).
+    Trailing stop en runtime usa ATR 1h (ver main_async.py).
+    Fallback a % fijo si ATR no disponible.
     Retorna dict con resultado o None si no se ejecutó.
     """
     init_db()
@@ -429,40 +463,33 @@ def execute_signal(signal: dict, market_data: dict, stop_pct: float = None,
         print(f"  [executor] Ya hay posición abierta en {symbol} — saltando")
         return None
  
-    # ── Re-entry cooldown check (v3) ──────────────────────────
-    reentry = _check_reentry_cooldown(symbol)
-    if not reentry['allowed']:
-        print(
-            f"  [executor] {symbol} en cooldown post-SL — "
-            f"faltan {REENTRY_COOLDOWN_HOURS - reentry['last_loss_ago_h']:.1f}h "
-            f"(hasta {reentry['cooldown_until']})"
-        )
-        log_event("REENTRY_BLOCKED",
-                  f"{symbol} bloqueado — cooldown post-SL ({reentry['last_loss_ago_h']:.1f}h de {REENTRY_COOLDOWN_HOURS}h)",
-                  symbol=symbol, level="WARNING",
-                  details=reentry)
-        return None
- 
     # Precio actual
     current_price = market_data.get(symbol, {}).get('price', 0)
     if not current_price:
         print(f"  [executor] Sin precio para {symbol} — abortando")
         return None
  
-    # ── Sizing: normal o reducido por re-entry (v3) ──────────
-    trade_usd = MAX_TRADE_USD
-    if reentry['is_reentry']:
-        trade_usd = MAX_TRADE_USD * REENTRY_SIZE_MULT
-        print(
-            f"  [executor] {symbol}: re-entrada post-SL — "
-            f"sizing reducido ${trade_usd:.0f} (×{REENTRY_SIZE_MULT})"
-        )
-        log_event("REENTRY_REDUCED",
-                  f"{symbol} re-entrada con sizing {REENTRY_SIZE_MULT*100:.0f}% (${trade_usd:.0f})",
-                  symbol=symbol, level="INFO",
-                  details=reentry)
+    # ── Pre-calcular ATR para sizing ──────────────────────────
+    # Necesitamos el ATR ANTES de la orden para dimensionar la posición.
+    # Después de la orden, _calc_sl_tp recalcula con entry_price real.
+    from strategies.trailing_stop import calc_atr_multi
  
-    quantity_raw = trade_usd / current_price
+    atr_data = calc_atr_multi(symbol, period=14)
+    atr_4h   = atr_data['atr_4h']
+ 
+    # ── Position sizing por riesgo ────────────────────────────
+    sizing = _calc_position_size(symbol, current_price, atr_4h, stop_pct)
+    quantity_raw = sizing['quantity']
+ 
+    print(
+        f"  [executor] Sizing {symbol}: "
+        f"capital=${sizing['capital']:.0f} | "
+        f"riesgo=${sizing['risk_usd']:.2f} ({RISK_PER_TRADE:.0%}) | "
+        f"distSL=${sizing['distance_sl']:.4f} | "
+        f"size=${sizing['usd_value']:.2f} USD | "
+        f"método={sizing['sizing_method']}"
+        f"{' [CAPPED]' if sizing['capped'] else ''}"
+    )
  
     # TP sugerido por Claude (referencia; puede ser reemplazado por ATR)
     take_profit_signal = parse_price(signal.get('take_profit', ''))
@@ -476,7 +503,7 @@ def execute_signal(signal: dict, market_data: dict, stop_pct: float = None,
         precision = market['precision']['amount']
         quantity  = exchange.amount_to_precision(symbol, quantity_raw)
  
-        print(f"  [executor] Ejecutando {direction} {symbol} | qty: {quantity} | precio: ${current_price} | usd: ${trade_usd:.0f}")
+        print(f"  [executor] Ejecutando {direction} {symbol} | qty: {quantity} | precio: ${current_price}")
  
         # Orden de mercado
         side  = 'buy' if direction == 'LONG' else 'sell'
@@ -491,39 +518,43 @@ def execute_signal(signal: dict, market_data: dict, stop_pct: float = None,
         order_id    = str(order['id'])
         usd_value   = float(quantity) * entry_price
  
-        # SL/TP basado en ATR con R:B adaptativo por régimen (v3)
+        # SL/TP basado en ATR (se calcula con el entry_price real de la orden)
         stop_loss, take_profit = _calc_sl_tp(
-            symbol, direction, entry_price, stop_pct, take_profit_signal,
-            regime=regime
+            symbol, direction, entry_price, stop_pct, take_profit_signal
         )
  
-        # Guardar en DB
+        # Guardar en DB (con metadata v2)
         trade_data = {
-            'symbol':      symbol,
-            'direction':   direction,
-            'conviction':  signal['conviction'],
-            'entry_price': entry_price,
-            'stop_loss':   stop_loss,
-            'take_profit': take_profit,
-            'quantity':    float(quantity),
-            'usd_value':   usd_value,
-            'order_id':    order_id,
-            'group_name':  signal.get('group_name', 'A'),
+            'symbol':          symbol,
+            'direction':       direction,
+            'conviction':      signal['conviction'],
+            'entry_price':     entry_price,
+            'stop_loss':       stop_loss,
+            'take_profit':     take_profit,
+            'quantity':        float(quantity),
+            'usd_value':       usd_value,
+            'order_id':        order_id,
+            'group_name':      signal.get('group_name', 'A'),
+            'signal_type':     signal.get('signal_type'),
+            'regime_at_entry': signal.get('regime_at_entry'),
+            'atr_at_entry':    atr_4h,
         }
         trade_id = save_trade(trade_data)
  
         print(f"  [executor] Orden ejecutada — ID: {order_id} | Trade DB ID: {trade_id}")
  
         return {
-            'trade_id':    trade_id,
-            'order_id':    order_id,
-            'symbol':      symbol,
-            'direction':   direction,
-            'entry_price': entry_price,
-            'stop_loss':   stop_loss,
-            'take_profit': take_profit,
-            'quantity':    float(quantity),
-            'usd_value':   usd_value,
+            'trade_id':       trade_id,
+            'order_id':       order_id,
+            'symbol':         symbol,
+            'direction':      direction,
+            'entry_price':    entry_price,
+            'stop_loss':      stop_loss,
+            'take_profit':    take_profit,
+            'quantity':       float(quantity),
+            'usd_value':      usd_value,
+            'sizing_method':  sizing['sizing_method'],
+            'risk_usd':       sizing['risk_usd'],
         }
  
     except Exception as e:
