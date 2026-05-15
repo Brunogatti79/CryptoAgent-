@@ -319,12 +319,103 @@ def get_available_capital() -> float:
  
 # ── Cálculo de SL/TP ─────────────────────────────────────────
  
+def _get_tp_multiplier(regime_info: dict | None,
+                       signal_type: str | None = None,
+                       change_24h: float = 0.0) -> tuple[float, str]:
+    """
+    Calcula el multiplicador de TP con 3 factores:
+ 
+    1. BASE por signal_type (qué tan temprano estás en el movimiento):
+         EMA_CROSS      → 2.5  (señal temprana, mayor recorrido esperado)
+         RSI_RECOVERY/J → 2.0  (señal de reversión, recorrido medio)
+         ALIGNMENT      → 1.75 (señal tardía, tendencia ya establecida)
+ 
+    2. AJUSTE CONTINUO por calidad del régimen (sin saltos binarios):
+         strength = f(persist_prob, bars_in_regime)
+         - persist_prob aporta hasta +0.6  (interpolado desde 0.60 a 0.95)
+         - bars_in_regime aporta hasta +0.3 (interpolado de 0 a 10 barras)
+         → rango total del ajuste: 0 a +0.9
+ 
+    3. DESCUENTO por sobre-extensión:
+         Si |change_24h| > 10% → mult × 0.85
+         (evita poner TP ambicioso en un techo/piso)
+ 
+    Clamp final: [1.5, 3.0]
+ 
+    Retorna: (multiplicador_tp, descripción_para_log)
+    """
+    # ── Paso 1: base por signal_type ──────────────────────────
+    if signal_type == 'EMA_CROSS':
+        base = 2.5
+    elif signal_type in ('RSI_RECOVERY', 'RSI_REJECTION'):
+        base = 2.0
+    else:  # ALIGNMENT o desconocido
+        base = 1.75
+ 
+    # ── Paso 2: ajuste continuo por régimen ───────────────────
+    strength = 0.0
+    regime_desc = 'sin_régimen'
+ 
+    if regime_info and regime_info.get('regime'):
+        regime       = regime_info['regime']
+        persist_prob = regime_info.get('persist_prob', 0.5)
+        bars         = regime_info.get('bars_in_regime', 0)
+ 
+        # Persistencia: interpolación lineal de 0.60→0 a 0.95→0.6
+        # Por debajo de 0.60, no aporta nada (régimen muy inestable)
+        persist_contrib = max(0, min((persist_prob - 0.60) / 0.35, 1.0)) * 0.6
+ 
+        # Duración: interpolación lineal de 0→0 a 10 barras→0.3
+        # Más de 10 barras (40h) ya no aporta extra
+        duration_contrib = min(bars / 10.0, 1.0) * 0.3
+ 
+        strength = persist_contrib + duration_contrib
+ 
+        # En BEAR_TREND, reducir el ajuste (shorts tienen menos recorrido)
+        if regime == 'BEAR_TREND':
+            strength *= 0.7
+ 
+        regime_desc = (
+            f"{regime} persist={persist_prob:.0%} {bars}bar "
+            f"str={strength:.2f}"
+        )
+ 
+    tp_mult = base + strength
+ 
+    # ── Paso 3: anti sobre-extensión ──────────────────────────
+    extension_discount = ''
+    if abs(change_24h) > 10:
+        tp_mult *= 0.85
+        extension_discount = f' ext={change_24h:+.1f}%→×0.85'
+ 
+    # ── Clamp final ───────────────────────────────────────────
+    tp_mult = max(1.5, min(tp_mult, 3.0))
+ 
+    reason = (
+        f"{signal_type or 'ALIGN'}→base={base:.2f} "
+        f"+ {regime_desc}"
+        f"{extension_discount}"
+        f" → {tp_mult:.2f}R"
+    )
+ 
+    return tp_mult, reason
+ 
+ 
 def _calc_sl_tp(symbol: str, direction: str, entry: float,
-                stop_pct: float, take_profit_signal: float) -> tuple[float, float]:
+                stop_pct: float, take_profit_signal: float,
+                regime_info: dict | None = None,
+                signal_type: str | None = None,
+                change_24h: float = 0.0) -> tuple[float, float]:
     """
     Calcula SL/TP usando ATR(14) 4h — mismo timeframe que la señal de entrada.
-    Esto evita que stops calculados con ATR 1h (más ajustado) sean triggeados
-    por ruido intradiario antes de que la tesis 4h se desarrolle.
+ 
+    v4: TP dinámico con 3 factores (signal_type + regime quality + extensión).
+      - SL siempre = ATR_4h × 1.5 (constante, define el riesgo)
+      - TP varía continuamente:
+          base por signal_type (1.75 a 2.5)
+          + ajuste por calidad régimen (0 a +0.9)
+          × descuento si sobre-extendido (×0.85)
+          clamp [1.5R, 3.0R]
  
     Roles de timeframe en el sistema:
       - ATR 4h → SL/TP inicial (este cálculo) — coherente con la tesis de entrada
@@ -348,20 +439,26 @@ def _calc_sl_tp(symbol: str, direction: str, entry: float,
             f"stops pueden ser menos confiables"
         )
  
+    # TP dinámico: signal_type + calidad régimen + extensión
+    tp_mult, tp_reason = _get_tp_multiplier(regime_info, signal_type, change_24h)
+ 
     if atr_4h and atr_4h > 0:
         # ── SL/TP basado en ATR 4h ──────────────────────────────
+        sl_distance = atr_4h * ATR_MULT
+        tp_distance = atr_4h * ATR_MULT * tp_mult
+ 
         if direction == 'LONG':
-            sl = entry - atr_4h * ATR_MULT
+            sl = entry - sl_distance
             tp = take_profit_signal if take_profit_signal > entry \
-                 else entry + atr_4h * ATR_MULT * 2
+                 else entry + tp_distance
         else:
-            sl = entry + atr_4h * ATR_MULT
+            sl = entry + sl_distance
             tp = take_profit_signal if 0 < take_profit_signal < entry \
-                 else entry - atr_4h * ATR_MULT * 2
+                 else entry - tp_distance
  
         print(
             f"  [executor] ATR 4h={atr_4h:.4f} | ATR 1h={atr_1h:.4f if atr_1h else 'N/A'} | "
-            f"ratio={ratio:.2f}x → SL={sl:.4f} TP={tp:.4f}"
+            f"ratio={ratio:.2f}x | TP {tp_reason} → SL={sl:.4f} TP={tp:.4f}"
         )
     else:
         # ── Fallback a porcentaje fijo ──────────────────────────
@@ -369,12 +466,12 @@ def _calc_sl_tp(symbol: str, direction: str, entry: float,
         if direction == 'LONG':
             sl = entry * (1 - pct)
             tp = take_profit_signal if take_profit_signal > entry \
-                 else entry * (1 + pct * 2)
+                 else entry * (1 + pct * tp_mult)
         else:
             sl = entry * (1 + pct)
             tp = take_profit_signal if 0 < take_profit_signal < entry \
-                 else entry * (1 - pct * 2)
-        print(f"  [executor] ATR 4h no disponible — usando pct={pct:.1%} → SL={sl:.4f} TP={tp:.4f}")
+                 else entry * (1 - pct * tp_mult)
+        print(f"  [executor] ATR 4h no disponible — pct={pct:.1%} | TP {tp_reason} → SL={sl:.4f} TP={tp:.4f}")
  
     return round(sl, 8), round(tp, 8)
  
@@ -519,8 +616,15 @@ def execute_signal(signal: dict, market_data: dict, stop_pct: float = None) -> d
         usd_value   = float(quantity) * entry_price
  
         # SL/TP basado en ATR (se calcula con el entry_price real de la orden)
+        # v4: TP dinámico con signal_type + calidad régimen + anti sobre-extensión
+        regime_info = signal.get('regime_info')
+        sig_type    = signal.get('signal_type')
+        chg_24h     = market_data.get(symbol, {}).get('change_24h', 0)
         stop_loss, take_profit = _calc_sl_tp(
-            symbol, direction, entry_price, stop_pct, take_profit_signal
+            symbol, direction, entry_price, stop_pct, take_profit_signal,
+            regime_info=regime_info,
+            signal_type=sig_type,
+            change_24h=chg_24h,
         )
  
         # Guardar en DB (con metadata v2)
