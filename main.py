@@ -1,11 +1,5 @@
 # =============================================================
 #  CRYPTO AGENT — MAIN v3 (régimen HMM + monitor posiciones + dashboard)
-#
-#  v3 cambios:
-#    - Conviction funcional: Haiku retorna confidence score, no hardcoded 9
-#    - Pasa régimen a execute_signal para R:B adaptativo
-#    - Re-entry cooldown integrado (executor lo maneja)
-#    - BTC correlation gate integrado (data.py lo maneja)
 # =============================================================
  
 import asyncio
@@ -485,7 +479,6 @@ def run_cycle():
             state["last_analysis"][sym] = datetime.now()
             try:
                 # Paso 1: filtro mecánico (sin llamada a API)
-                # v3: check_entry_conditions ahora incluye BTC correlation gate
                 cond = market_data_module.check_entry_conditions(
                     sym, mkt, regimes.get(sym, {})
                 )
@@ -526,7 +519,6 @@ def run_cycle():
                 log.info(f"  [A] {sym} califica ({cond['direction']}) [{cond.get('signal_type')}]: {' | '.join(cond['reasons'])}")
  
                 # Paso 2: veto Claude Haiku (barato, rápido)
-                # v3: ahora retorna confidence score para conviction funcional
                 reg_ctx = regime_module.format_regime_context(
                     {sym: regimes[sym]} if sym in regimes else {}
                 )
@@ -541,45 +533,30 @@ def run_cycle():
                                   details={**snapshot,
                                            "direction": cond["direction"],
                                            "veto_reason": veto["reason"],
-                                           "confidence": veto.get("confidence", 0),
-                                           "conditions": cond["reasons"]})
-                    continue
- 
-                # v3: conviction viene del confidence score de Haiku
-                conviction = veto.get("confidence", 7)
- 
-                # Verificar contra MIN_SIGNAL_CONVICTION (ahora funcional)
-                if conviction < config.MIN_SIGNAL_CONVICTION:
-                    log.info(f"  [A] {sym} descartado — conviction {conviction}/10 < mínimo {config.MIN_SIGNAL_CONVICTION}")
-                    exc.log_event("LOW_CONVICTION",
-                                  f"{sym} descartado — conviction {conviction}/10",
-                                  symbol=sym, group="A", level="INFO",
-                                  details={**snapshot,
-                                           "conviction": conviction,
-                                           "min_required": config.MIN_SIGNAL_CONVICTION,
                                            "conditions": cond["reasons"]})
                     continue
  
                 # Paso 3: señal aprobada — armar para ejecución
                 sig = {
-                    "symbol":      sym,
-                    "direction":   cond["direction"],
-                    "conviction":  conviction,
-                    "actionable":  True,
-                    "thesis":      f"[{cond.get('signal_type')}] {', '.join(cond['reasons'])}",
-                    "group":       "A",
-                    "group_name":  "A",
-                    "take_profit": "",
-                    "stop_loss":   "",
-                    "regime":      regimes.get(sym, {}).get("regime"),  # v3: para R:B adaptativo
+                    "symbol":         sym,
+                    "direction":      cond["direction"],
+                    "conviction":     9,
+                    "actionable":     True,
+                    "thesis":         f"[{cond.get('signal_type')}] {', '.join(cond['reasons'])}",
+                    "group":          "A",
+                    "group_name":     "A",
+                    "take_profit":    "",
+                    "stop_loss":      "",
+                    "signal_type":    cond.get("signal_type"),
+                    "regime_at_entry": regimes.get(sym, {}).get("regime"),
                 }
                 signals.append(sig)
                 exc.log_event("CLAUDE_SIGNAL",
-                              f"{sym} → {cond['direction']} [{cond.get('signal_type')}] aprobado (conv {conviction}/10)",
+                              f"{sym} → {cond['direction']} [{cond.get('signal_type')}] aprobado",
                               symbol=sym, group="A", level="WARNING",
                               details={**snapshot,
                                        "qualified":   True,
-                                       "conviction":  conviction,
+                                       "conviction":  9,
                                        "conditions":  cond["reasons"],
                                        "veto_reason": veto["reason"]})
  
@@ -636,21 +613,15 @@ def run_cycle():
                 continue
             is_b     = signal.get("group") == "B"
             stop_pct = config.STOP_LOSS_PCT_B   if is_b else config.STOP_LOSS_PCT
-            log.info(f"Ejecutando: {signal['symbol']} {signal['direction']} conv={signal['conviction']}/10 (Grupo {'B' if is_b else 'A'})")
+            log.info(f"Ejecutando: {signal['symbol']} {signal['direction']} (Grupo {'B' if is_b else 'A'})")
             signal["group_name"] = "B" if is_b else "A"
- 
-            # v3: pasar régimen para R:B adaptativo
-            regime_for_exec = signal.get("regime")
-            res = exc.execute_signal(signal, mkt, stop_pct=stop_pct, regime=regime_for_exec)
- 
+            res = exc.execute_signal(signal, mkt, stop_pct=stop_pct)
             if res:
                 tg.send_execution_confirmation(res)
                 exc.log_event("TRADE_OPEN",
-                              f"{res['symbol']} {res['direction']} @ ${res['entry_price']:,.4f} (conv {signal['conviction']}/10)",
+                              f"{res['symbol']} {res['direction']} @ ${res['entry_price']:,.4f}",
                               symbol=res["symbol"], group=signal["group_name"], level="INFO",
-                              details={**res, "group": signal["group_name"],
-                                       "conviction": signal["conviction"],
-                                       "regime": regime_for_exec})
+                              details={**res, "group": signal["group_name"]})
             else:
                 log.warning(f"No ejecutado: {signal['symbol']}")
  
@@ -691,21 +662,13 @@ def main():
     log.info("[async] TrailingEngine thread arrancado")
  
     exc.init_db()
-    exc.log_event("STARTUP", "Agente v3 iniciado",
+    exc.log_event("STARTUP", "Agente iniciado",
                   level="INFO", details={
                       "symbols_a": config.SYMBOLS,
                       "group_b_enabled": config.GROUP_B_ENABLED,
                       "testnet": config.BINANCE_TESTNET,
                       "monitor_min": config.MONITOR_INTERVAL_MINUTES,
                       "analysis_min": config.ANALYSIS_INTERVAL_MINUTES,
-                      "version": "v3",
-                      "fixes": [
-                          "trailing_stop_short_fix",
-                          "btc_correlation_gate",
-                          "rb_adaptativo_regimen",
-                          "conviction_funcional",
-                          "reentry_cooldown",
-                      ],
                   })
     tg.send_startup()
  
