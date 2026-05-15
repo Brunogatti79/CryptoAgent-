@@ -8,21 +8,11 @@ Responsabilidades exclusivas de este módulo:
   1. Binance WebSocket → precios en tiempo real (core/binance_ws.py)
   2. TrailingStop ATR-based → cierre automático de posiciones (strategies/trailing_stop.py)
  
-La lógica de análisis (Claude + régimen HMM) sigue en main.py hasta Fase 2.
+v3: Fix — _on_price pasa direction a update_on_price para manejar SHORT correctamente.
  
 Arranque:
     python main_async.py          # solo trailing stop
     ASYNC_ENABLED=true             # necesario; si no está, este módulo no hace nada
- 
-Integración con main.py:
-    main.py llama a asyncio.run(run_trailing_engine()) al final de su propio loop,
-    o bien se lanza como proceso separado con Procfile.
- 
-CAMBIOS v3:
-  - _on_price usa update_trailing (con dirección) en vez de update_on_price
-    → fix SHORT trailing que antes asumía LONG siempre
-  - Cuando el trailing mueve el stop, se persiste en stop_loss de la DB
-    → check_open_positions (15 min) usa el valor más reciente
 """
  
 import asyncio
@@ -56,10 +46,6 @@ from strategies.trailing_stop import TrailingStopManager
 # ── Configuración ────────────────────────────────────────────
 DB_PATH         = os.path.join(os.getenv("DATA_DIR", "."), "trades.db")
 ASYNC_ENABLED   = os.getenv("ASYNC_ENABLED", "false").lower() == "true"
- 
-# Incluir Group B symbols si hay posiciones abiertas de cualquier símbolo
-# El WS suscribe a todos los symbols de la DB + SYMBOLS base
-# Se refresca cada vez que hay un nuevo trade
  
  
 # ═══════════════════════════════════════════════════════════════
@@ -113,35 +99,26 @@ class TrailingEngine:
         """
         Recibe cada tick del WebSocket.
         1. Inicializa stops de trades recién abiertos que aún no tienen stop ATR.
-        2. Llama update_trailing con dirección → fix SHORT (v3).
-        3. Si el trailing movió el stop, lo persiste en DB → fix coordinación SL (v3).
-        4. Si tocó stop, cierra la posición.
+        2. Llama update_on_price con direction → si toca stop, cierra la posición.
+ 
+        v3: pasa direction explícitamente para que SHORT funcione correctamente.
         """
         # Buscar trades abiertos en este símbolo
         trades = _get_open_trades_for_symbol(symbol)
         for trade in trades:
-            tid       = trade["id"]
-            direction = trade["direction"]
+            tid = trade["id"]
  
             # Inicializar stop si es la primera vez que vemos este trade
             if tid not in self._initialized_ids:
                 stop = await self._ts_manager.initialize_stop(trade)
                 if stop is not None:
                     self._initialized_ids.add(tid)
-                    log.info(f"[Engine] Stop inicializado #{tid} {symbol} {direction} @ {stop:.4f}")
+                    log.info(f"[Engine] Stop inicializado #{tid} {symbol} {trade['direction']} @ {stop:.4f}")
                 continue  # el primer tick solo inicializa
  
-            # ── FIX v3: usar update_trailing con dirección ──────
-            # Antes usaba update_on_price que asumía LONG siempre.
-            # Ahora pasa la dirección real del trade.
-            stop, hit, moved = self._ts_manager.update_trailing(tid, price, direction)
- 
-            # ── FIX v3: persistir cuando el stop se mueve ───────
-            # Así check_open_positions (cada 15 min) usa el stop
-            # más reciente si el WebSocket se desconecta.
-            if moved:
-                await self._ts_manager.persist_trailing_to_db(tid, stop)
- 
+            # Actualizar trailing y verificar si tocó
+            # v3: pasamos direction para que SHORT funcione correctamente
+            hit = self._ts_manager.update_on_price(tid, price, direction=trade["direction"])
             if hit:
                 await self._close_by_trailing(trade, price)
  
@@ -153,7 +130,7 @@ class TrailingEngine:
         symbol  = trade["symbol"]
         stop    = self._ts_manager.get_stop(tid)
  
-        log.info(f"[Engine] TRAILING STOP HIT #{tid} {symbol} @ {current_price:.4f} (stop={stop})")
+        log.info(f"[Engine] TRAILING STOP HIT #{tid} {symbol} {trade['direction']} @ {current_price:.4f} (stop={stop})")
  
         # Cerrar en la DB con precio actual (el stop fue tocado exactamente)
         exit_price = stop if stop else current_price
