@@ -549,6 +549,7 @@ def run_cycle():
                     "stop_loss":      "",
                     "signal_type":    cond.get("signal_type"),
                     "regime_at_entry": regimes.get(sym, {}).get("regime"),
+                    "regime_info":    regimes.get(sym, {}),  # completo para TP dinámico
                 }
                 signals.append(sig)
                 exc.log_event("CLAUDE_SIGNAL",
