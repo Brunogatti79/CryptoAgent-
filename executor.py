@@ -81,6 +81,8 @@ def init_db():
         ("signal_type",     "TEXT"),
         ("regime_at_entry", "TEXT"),
         ("atr_at_entry",    "REAL"),
+        ("mfe_price",       "REAL"),   # Max Favorable Excursion (mejor precio alcanzado)
+        ("mae_price",       "REAL"),   # Max Adverse Excursion (peor precio alcanzado)
     ]
     for col, dtype in _migrations:
         try:
@@ -675,6 +677,69 @@ def get_balance_usdt() -> float:
     except Exception as e:
         print(f"  [executor] ERROR obteniendo balance: {e}")
         return 0.0
+ 
+ 
+def update_mfe_mae(trade_id: int, high: float, low: float) -> None:
+    """
+    Actualiza MFE/MAE de un trade abierto con el high/low del tick actual.
+ 
+    Para LONG:
+      MFE = max(mfe_actual, high)   → el precio más alto que alcanzó
+      MAE = min(mae_actual, low)    → el precio más bajo que alcanzó
+ 
+    Para SHORT:
+      MFE = min(mfe_actual, low)    → el precio más bajo (favorable para short)
+      MAE = max(mae_actual, high)   → el precio más alto (adverso para short)
+ 
+    Se llama desde main_async._on_price() en cada tick del WebSocket.
+    Es un UPDATE ligero (sin SELECT previo) usando MIN/MAX de SQL.
+    """
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        direction = conn.execute(
+            "SELECT direction FROM trades WHERE id=? AND status='OPEN'",
+            (trade_id,)
+        ).fetchone()
+ 
+        if not direction:
+            conn.close()
+            return
+ 
+        direction = direction[0]
+ 
+        if direction == 'LONG':
+            # MFE = el high más alto visto; MAE = el low más bajo visto
+            conn.execute("""
+                UPDATE trades SET
+                    mfe_price = CASE
+                        WHEN mfe_price IS NULL THEN ?
+                        WHEN ? > mfe_price THEN ?
+                        ELSE mfe_price END,
+                    mae_price = CASE
+                        WHEN mae_price IS NULL THEN ?
+                        WHEN ? < mae_price THEN ?
+                        ELSE mae_price END
+                WHERE id = ? AND status = 'OPEN'
+            """, (high, high, high, low, low, low, trade_id))
+        else:  # SHORT
+            # MFE = el low más bajo visto; MAE = el high más alto visto
+            conn.execute("""
+                UPDATE trades SET
+                    mfe_price = CASE
+                        WHEN mfe_price IS NULL THEN ?
+                        WHEN ? < mfe_price THEN ?
+                        ELSE mfe_price END,
+                    mae_price = CASE
+                        WHEN mae_price IS NULL THEN ?
+                        WHEN ? > mae_price THEN ?
+                        ELSE mae_price END
+                WHERE id = ? AND status = 'OPEN'
+            """, (low, low, low, high, high, high, trade_id))
+ 
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"  [executor] update_mfe_mae ERROR #{trade_id}: {e}")
  
  
 def close_trade(trade_id: int, exit_price: float, result: str) -> None:
