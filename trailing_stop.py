@@ -2,17 +2,16 @@
 #  CRYPTO AGENT — TRAILING STOP
 #  ATR-based trailing stop manager.
 #
-#  CAMBIO v3: fix SHORT + persistencia de trailing en DB
+#  v3: Fix SHORT trailing + R:B adaptativo por régimen
 #  ─────────────────────────────────────────────────────────────
 #  Roles por timeframe:
 #    4h → SL/TP inicial (coherente con la tesis de entrada)
 #    1h → trailing stop en runtime (seguimiento fino del precio)
 #
-#  FIX v3:
-#    - update_on_price eliminado (asumía LONG siempre)
-#    - _on_price en main_async ahora llama update_trailing con dirección
-#    - update_trailing persiste stop_loss en DB cuando sube/baja
-#      → check_open_positions (15 min) usa el stop más reciente
+#  Cambios v3:
+#    - update_on_price recibe direction y maneja LONG/SHORT correctamente
+#    - TrailingStopManager almacena dirección por trade
+#    - Constantes REGIME_TP_MULT para R:B adaptativo
 # =============================================================
  
 import logging
@@ -23,6 +22,18 @@ log = logging.getLogger(__name__)
  
 # Multiplicador ATR para trailing stop en runtime (1h)
 ATR_MULT = 1.5
+ 
+# ── R:B adaptativo por régimen ────────────────────────────────
+# En BEAR_TREND la volatilidad es ~2× normal → necesitamos más recorrido
+# para que el TP compense el riesgo mayor de stop hit.
+# En BULL_TREND la vol es baja → 2:1 es suficiente y realista.
+REGIME_TP_MULT = {
+    'BULL_TREND': 2.0,   # TP = ATR × 1.5 × 2.0 → ratio 2:1
+    'BEAR_TREND': 3.0,   # TP = ATR × 1.5 × 3.0 → ratio 3:1
+    'REVERSAL':   2.5,   # TP = ATR × 1.5 × 2.5 → ratio 2.5:1
+    'SIDEWAYS':   2.0,   # no debería llegar aquí, pero fallback seguro
+}
+DEFAULT_TP_MULT = 2.0    # fallback si régimen desconocido
  
 # Intervalo por defecto para el trailing en tiempo real
 TRAILING_TIMEFRAME = '1h'
@@ -47,10 +58,6 @@ def _calc_atr_sync(symbol: str, period: int = 14,
  
     Returns:
         float con el ATR de la última vela, o None si hay error.
- 
-    Roles:
-        - timeframe='4h' → usar para SL/TP inicial (coherente con señal)
-        - timeframe='1h' → usar para trailing stop en runtime
     """
     VALID_TIMEFRAMES = {'1h', '4h', '1d', '15m', '1w'}
     if timeframe not in VALID_TIMEFRAMES:
@@ -107,14 +114,6 @@ def calc_atr_multi(symbol: str, period: int = 14) -> dict:
     """
     Calcula ATR en 1h y 4h simultáneamente.
     Útil para comparar y detectar compresión anormal.
- 
-    Returns:
-        {
-            'atr_1h':  float | None,
-            'atr_4h':  float | None,
-            'ratio':   float | None,   # atr_4h / atr_1h (esperable ~2-4x)
-            'compressed': bool         # True si ratio < 1.5 (señal de baja fiabilidad)
-        }
     """
     atr_1h = _calc_atr_sync(symbol, period=period, timeframe='1h')
     atr_4h = _calc_atr_sync(symbol, period=period, timeframe='4h')
@@ -124,8 +123,6 @@ def calc_atr_multi(symbol: str, period: int = 14) -> dict:
  
     if atr_1h and atr_4h and atr_1h > 0:
         ratio      = round(atr_4h / atr_1h, 2)
-        # Si ATR 4h < 1.5× ATR 1h, el mercado está comprimido
-        # En condiciones normales ATR 4h debería ser ~2-4x el ATR 1h
         compressed = ratio < 1.5
  
     return {
@@ -143,15 +140,14 @@ class TrailingStopManager:
     Gestiona trailing stops en memoria para posiciones abiertas.
     Usa ATR 1h para el seguimiento intradiario del precio.
  
-    CAMBIO v3: cuando el trailing mueve el stop, persiste en
-    stop_loss de la DB para que check_open_positions (cada 15 min)
-    use el valor más reciente si el WebSocket se desconecta.
+    v3: almacena dirección por trade para manejar LONG y SHORT correctamente.
     """
  
     def __init__(self, db_path: str):
-        self._db_path  = db_path
-        self._stops:   dict[int, float] = {}   # trade_id → stop actual
-        self._atrs:    dict[int, float] = {}   # trade_id → ATR 1h inicial
+        self._db_path     = db_path
+        self._stops:      dict[int, float] = {}   # trade_id → stop actual
+        self._atrs:       dict[int, float] = {}   # trade_id → ATR 1h inicial
+        self._directions: dict[int, str]   = {}   # trade_id → 'LONG' | 'SHORT'
  
     def load_open_trades(self, trades: list[dict]) -> None:
         """Restaura stops desde DB al arrancar."""
@@ -159,10 +155,12 @@ class TrailingStopManager:
             tid  = t['id']
             stop = t.get('trailing_stop_price') or t.get('stop_loss')
             atr  = t.get('atr_value')
+            direction = t.get('direction', 'LONG')
             if stop:
                 self._stops[tid] = float(stop)
             if atr:
                 self._atrs[tid]  = float(atr)
+            self._directions[tid] = direction
  
     async def initialize_stop(self, trade: dict) -> float | None:
         """
@@ -186,20 +184,41 @@ class TrailingStopManager:
         else:
             stop = entry + atr * ATR_MULT
  
-        self._stops[trade['id']] = stop
-        self._atrs[trade['id']]  = atr
+        self._stops[trade['id']]      = stop
+        self._atrs[trade['id']]       = atr
+        self._directions[trade['id']] = direction
  
         await self._persist_stop(trade['id'], stop, atr)
         return stop
+ 
+    def update_on_price(self, trade_id: int, price: float,
+                        direction: str = None) -> bool:
+        """
+        Actualiza el trailing stop con el precio actual.
+        Retorna True si el precio tocó el stop (señal de cierre).
+ 
+        v3: recibe direction explícitamente o usa la almacenada.
+        Maneja LONG y SHORT correctamente delegando a update_trailing.
+        """
+        if trade_id not in self._stops or trade_id not in self._atrs:
+            return False
+ 
+        # Resolver dirección: parámetro > almacenada
+        if direction is None:
+            direction = self._directions.get(trade_id)
+        if direction is None:
+            log.warning(f"[trailing] Trade #{trade_id}: dirección desconocida — no se puede evaluar stop")
+            return False
+ 
+        # Delegar al método completo que mueve + chequea
+        _new_stop, hit = self.update_trailing(trade_id, price, direction)
+        return hit
  
     def update_trailing(self, trade_id: int, price: float,
                         direction: str) -> tuple[float, bool]:
         """
         Mueve el stop si el precio avanzó a favor.
         Retorna (nuevo_stop, tocó_stop).
- 
-        FIX v3: esta es ahora la ÚNICA función de actualización.
-        update_on_price fue eliminado porque asumía LONG siempre.
         """
         if trade_id not in self._stops or trade_id not in self._atrs:
             return 0.0, False
@@ -207,14 +226,12 @@ class TrailingStopManager:
         stop = self._stops[trade_id]
         atr  = self._atrs[trade_id]
         hit  = False
-        moved = False
  
         if direction == 'LONG':
             new_stop = price - atr * ATR_MULT
             if new_stop > stop:              # solo subir, nunca bajar
                 self._stops[trade_id] = new_stop
                 stop = new_stop
-                moved = True
             hit = price <= stop
  
         else:  # SHORT
@@ -222,17 +239,20 @@ class TrailingStopManager:
             if new_stop < stop:              # solo bajar, nunca subir
                 self._stops[trade_id] = new_stop
                 stop = new_stop
-                moved = True
             hit = price >= stop
  
-        return stop, hit, moved
+        return stop, hit
  
     def get_stop(self, trade_id: int) -> float | None:
         return self._stops.get(trade_id)
  
+    def get_direction(self, trade_id: int) -> str | None:
+        return self._directions.get(trade_id)
+ 
     def remove(self, trade_id: int) -> None:
         self._stops.pop(trade_id, None)
         self._atrs.pop(trade_id, None)
+        self._directions.pop(trade_id, None)
  
     async def _persist_stop(self, trade_id: int, stop: float, atr: float) -> None:
         """Guarda trailing_stop_price y atr_value en la DB."""
@@ -250,34 +270,6 @@ class TrailingStopManager:
                 conn.close()
             except Exception as e:
                 log.error(f"[trailing] Error persistiendo stop #{trade_id}: {e}")
- 
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, _write)
- 
-    async def persist_trailing_to_db(self, trade_id: int, new_stop: float) -> None:
-        """
-        Punto 5 fix: persiste el trailing stop actualizado en AMBAS columnas:
-          - trailing_stop_price (para el motor async)
-          - stop_loss (para check_open_positions cada 15 min)
- 
-        Así si el WebSocket se desconecta, el check de 15 min usa
-        el stop más reciente en vez del SL original.
-        """
-        import asyncio
-        import sqlite3
- 
-        def _write():
-            try:
-                conn = sqlite3.connect(self._db_path)
-                conn.execute(
-                    "UPDATE trades SET trailing_stop_price=?, stop_loss=? WHERE id=?",
-                    (round(new_stop, 8), round(new_stop, 8), trade_id)
-                )
-                conn.commit()
-                conn.close()
-                log.debug(f"[trailing] Stop #{trade_id} persistido → {new_stop:.6f}")
-            except Exception as e:
-                log.error(f"[trailing] Error persistiendo trailing #{trade_id}: {e}")
  
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, _write)
