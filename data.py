@@ -2,18 +2,11 @@
 #  CRYPTO AGENT — DATA
 #  Obtiene precios e indicadores desde Binance public API
 #  (sin key, sin rate limit estricto)
-#
-#  v3: + BTC correlation gate para altcoins
 # =============================================================
  
 import requests
 import pandas as pd
 from datetime import datetime
- 
-# ── Umbral de correlación BTC ─────────────────────────────────
-# Si BTC cae más de este % en la vela 4h actual, bloquea LONG en altcoins.
-# Racional: cuando BTC cae fuerte, las altcoins suelen caer más.
-BTC_CORR_DROP_PCT = -2.0
  
  
 def get_prices_and_indicators(symbols: list[str]) -> dict:
@@ -69,7 +62,21 @@ def get_prices_and_indicators(symbols: list[str]) -> dict:
                 any(rsi_series.iloc[-i] > 65 for i in range(1, 7)) and rsi < 60
             )
  
+            # ── Sobreextensión (últimas 3 velas 4h) ─────────────
+            # Detecta si las últimas 3 velas consecutivas tienen cambio >5%
+            # en la misma dirección. Señal de agotamiento / trampa.
+            candle_changes = [
+                (closes.iloc[-i] - closes.iloc[-(i+1)]) / closes.iloc[-(i+1)] * 100
+                for i in range(1, 4)
+            ]
+            overextended_up   = all(c > 5.0 for c in candle_changes)
+            overextended_down = all(c < -5.0 for c in candle_changes)
+ 
             # ── Confirmación timeframe 1h ────────────────────────
+            # EMA20 en 1h para validar que el precio está del lado correcto
+            # antes de ejecutar una entrada basada en señal 4h.
+            # Rol: timing fino — evita entrar en mitad de una corrección 1h
+            #      dentro de una tendencia 4h válida.
             klines_1h_url = (
                 f"https://api.binance.com/api/v3/klines"
                 f"?symbol={binance_symbol}&interval=1h&limit=30"
@@ -94,10 +101,13 @@ def get_prices_and_indicators(symbols: list[str]) -> dict:
                 "ema_cross_down":      ema_cross_down,
                 "rsi_recovery":        rsi_recovery,
                 "rsi_rejection":       rsi_rejection,
-                # ── Confirmación 1h ──────────────────────────────
+                # ── Confirmación 1h (nuevo) ──────────────────────
                 "ema20_1h":            round(ema20_1h, 2),
                 "price_above_ema20_1h": price_above_1h,
                 "price_below_ema20_1h": price_below_1h,
+                # ── Sobreextensión ───────────────────────────────
+                "overextended_up":     overextended_up,
+                "overextended_down":   overextended_down,
             }
             cross = "🔼EMA" if ema_cross_up else ("🔽EMA" if ema_cross_down else "")
             recov = "↩RSI" if rsi_recovery else ""
@@ -186,16 +196,13 @@ def check_entry_conditions(symbol: str, market_data: dict, regime_info: dict) ->
     """
     Filtro mecánico de entrada para Grupo A. Todas las condiciones deben cumplirse.
  
-    Gates (v3):
+    Condiciones:
       1. Régimen HMM en BULL_TREND (→ LONG) o BEAR_TREND (→ SHORT)
-      2. Tipo de señal (EMA_CROSS, RSI_RECOVERY, RSI_REJECTION, ALIGNMENT)
-      3. EMA20/EMA50 alineada con el régimen
-      4. RSI en zona neutral (umbrales por signal_type)
-      5. Volumen ≥ 1.2/1.3× promedio 20 períodos
-      6. Confirmación timeframe 1h (EMA20 1h)
-      7. BTC correlation gate — bloquea LONG altcoins si BTC cae >2% en 4h
+      2. EMA20/EMA50 alineada con el régimen
+      3. RSI en zona neutral — no sobrecomprado ni sobrevendido en la entrada
+      4. Volumen ≥ 1.3× promedio 20 períodos (confirma que hay participación)
  
-    Retorna: {qualified, direction, reasons, blockers, signal_type}
+    Retorna: {qualified, direction, reasons, blockers}
     """
     blockers: list[str] = []
     reasons:  list[str] = []
@@ -226,7 +233,8 @@ def check_entry_conditions(symbol: str, market_data: dict, regime_info: dict) ->
         return {'qualified': False, 'direction': None, 'reasons': reasons,
                 'blockers': blockers, 'signal_type': None}
  
-    # 2. Detectar tipo de señal
+    # 2. Detectar tipo de señal — determina qué tan estrictos somos con el RSI
+    #    EMA_CROSS y RSI_RECOVERY son señales fuertes con evidencia histórica
     signal_type = None
     if direction == 'LONG'  and ema_cross_up:
         signal_type = 'EMA_CROSS'
@@ -247,6 +255,7 @@ def check_entry_conditions(symbol: str, market_data: dict, regime_info: dict) ->
     elif direction == 'SHORT' and trend == 'BAJISTA':
         reasons.append('EMA20 < EMA50 ✓')
     else:
+        # EMA_CROSS no requiere alineación previa — el cruce ES la alineación
         if signal_type != 'EMA_CROSS':
             blockers.append(f'EMA {trend} no alinea con {direction}')
  
@@ -279,11 +288,17 @@ def check_entry_conditions(symbol: str, market_data: dict, regime_info: dict) ->
         blockers.append(f'volumen {vol_ratio:.1f}x bajo (mín {vol_min}×)')
  
     # 6. Confirmación timeframe 1h
+    #    Verifica que el precio esté del lado correcto de la EMA20 1h.
+    #    Evita entrar en mitad de una corrección intradiaria dentro de
+    #    una tendencia 4h válida.
+    #    Excepción: EMA_CROSS omite este filtro porque el cruce mismo
+    #    confirma la dirección — exigir 1h sería redundante y muy restrictivo.
     if signal_type != 'EMA_CROSS':
         price_above_1h = d.get('price_above_ema20_1h')
         price_below_1h = d.get('price_below_ema20_1h')
  
         if price_above_1h is None:
+            # Dato no disponible — no bloqueamos, solo informamos
             reasons.append('confirmación 1h sin datos (omitida)')
         elif direction == 'LONG':
             if price_above_1h:
@@ -298,20 +313,33 @@ def check_entry_conditions(symbol: str, market_data: dict, regime_info: dict) ->
     else:
         reasons.append('confirmación 1h omitida (EMA_CROSS es suficiente)')
  
-    # ── 7. BTC correlation gate (NUEVO v3) ────────────────────
-    # Si el símbolo NO es BTC y la dirección es LONG,
-    # verificar que BTC no esté cayendo >2% en la vela 4h actual.
-    # Racional: cuando BTC cae fuerte, las altcoins suelen caer más.
-    if symbol != 'BTC/USDT' and direction == 'LONG':
+    # 7. Sobreextensión — 3 velas 4h consecutivas >5% en la misma dirección
+    #    Señal de agotamiento: el precio ya corrió demasiado, entrar ahora
+    #    es perseguir un movimiento que probablemente revierta.
+    #    Este gate reemplaza parte del veto LLM (antes era "sobreextensión
+    #    técnica extrema" en el prompt de Claude Haiku).
+    overextended_up   = d.get('overextended_up',   False)
+    overextended_down = d.get('overextended_down', False)
+ 
+    if direction == 'LONG' and overextended_up:
+        blockers.append('sobreextensión alcista — 3 velas >5% consecutivas')
+    elif direction == 'SHORT' and overextended_down:
+        blockers.append('sobreextensión bajista — 3 velas >5% consecutivas')
+ 
+    # 8. BTC correlation gate — altcoins vs BTC drawdown
+    #    Si BTC cayó >3% en la vela 4h actual y el símbolo es altcoin,
+    #    bloquear LONG (las alts tienden a caer más que BTC).
+    #    Si BTC subió >3% en la vela 4h actual y el símbolo es altcoin,
+    #    bloquear SHORT (las alts suben con BTC).
+    #    BTC/USDT nunca se bloquea a sí mismo.
+    if symbol != 'BTC/USDT':
         btc_data = market_data.get('BTC/USDT', {})
         btc_change_4h = btc_data.get('change_4h', 0)
-        if btc_change_4h is not None and btc_change_4h <= BTC_CORR_DROP_PCT:
-            blockers.append(
-                f'BTC cayendo {btc_change_4h:+.2f}% en 4h — '
-                f'correlación bloquea LONG altcoin'
-            )
-        elif btc_change_4h is not None and btc_change_4h > BTC_CORR_DROP_PCT:
-            reasons.append(f'BTC estable en 4h ({btc_change_4h:+.2f}%) ✓')
+ 
+        if direction == 'LONG' and btc_change_4h < -3.0:
+            blockers.append(f'BTC cayendo {btc_change_4h:+.1f}% en 4h — altcoin LONG bloqueado')
+        elif direction == 'SHORT' and btc_change_4h > 3.0:
+            blockers.append(f'BTC subiendo {btc_change_4h:+.1f}% en 4h — altcoin SHORT bloqueado')
  
     qualified = len(blockers) == 0
     return {
