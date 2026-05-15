@@ -3,13 +3,17 @@
 #  Obtiene precios e indicadores desde Binance public API
 #  (sin key, sin rate limit estricto)
 #
-#  CAMBIO v3: conviction scoring mecánico en check_entry_conditions
-#  Cada gate aporta puntos según margen de cumplimiento (no hardcoded 9).
+#  v3: + BTC correlation gate para altcoins
 # =============================================================
  
 import requests
 import pandas as pd
 from datetime import datetime
+ 
+# ── Umbral de correlación BTC ─────────────────────────────────
+# Si BTC cae más de este % en la vela 4h actual, bloquea LONG en altcoins.
+# Racional: cuando BTC cae fuerte, las altcoins suelen caer más.
+BTC_CORR_DROP_PCT = -2.0
  
  
 def get_prices_and_indicators(symbols: list[str]) -> dict:
@@ -178,106 +182,27 @@ def get_top_movers(symbols_a: list[str], n: int = 2,
     return movers[:n]
  
  
-# ═══════════════════════════════════════════════════════════════
-#  CONVICTION SCORING — Punto 2 fix
-# ═══════════════════════════════════════════════════════════════
-#
-#  Cada gate aporta puntos según qué tan cómodamente se cumplió.
-#  Escala 1-10 donde:
-#    6 = pasó todos los gates con margen mínimo (señal válida pero débil)
-#    7-8 = pasó con margen sólido (señal operativa estándar)
-#    9-10 = señal fuerte con múltiples confirmaciones
-#
-#  Componentes del score:
-#    Base por régimen:               +5 (BULL/BEAR habilitado)
-#    Señal fuerte (EMA_CROSS/RSI_*): +1
-#    RSI en zona óptima:             +1 (centro del rango, no bordes)
-#    Volumen alto (>1.8x):           +1
-#    Confirmación 1h holgada:        +1
-#    Régimen maduro (>6 barras):     +1
-#
-#  Mínimo posible si califica: 5 (solo régimen)
-#  Máximo: 10 (todas las condiciones con margen)
-#  MIN_SIGNAL_CONVICTION=8 en config → filtra señales débiles
-# ═══════════════════════════════════════════════════════════════
- 
-def _calc_conviction(direction: str, signal_type: str | None,
-                     rsi: float, vol_ratio: float,
-                     regime_info: dict, market_data_sym: dict,
-                     rsi_min: float, rsi_max: float) -> tuple[int, list[str]]:
-    """
-    Calcula conviction score mecánico basado en calidad de la señal.
- 
-    Retorna: (score 1-10, lista de razones del scoring)
-    """
-    score = 5   # base: régimen operable
-    details = ["base régimen operable: +5"]
- 
-    # +1 señal fuerte (EMA_CROSS, RSI_RECOVERY, RSI_REJECTION)
-    if signal_type in ('EMA_CROSS', 'RSI_RECOVERY', 'RSI_REJECTION'):
-        score += 1
-        details.append(f"señal fuerte ({signal_type}): +1")
- 
-    # +1 RSI en zona óptima (centro del rango, no en los bordes)
-    # "Centro" = dentro del 60% medio del rango permitido
-    rsi_range = rsi_max - rsi_min
-    rsi_center = rsi_min + rsi_range * 0.5
-    rsi_margin = rsi_range * 0.3  # 30% a cada lado del centro
-    if (rsi_center - rsi_margin) <= rsi <= (rsi_center + rsi_margin):
-        score += 1
-        details.append(f"RSI {rsi:.1f} en zona óptima [{rsi_center-rsi_margin:.0f}-{rsi_center+rsi_margin:.0f}]: +1")
- 
-    # +1 volumen alto (>1.8x promedio — claramente por encima del mínimo)
-    if vol_ratio >= 1.8:
-        score += 1
-        details.append(f"volumen {vol_ratio:.1f}x alto (>1.8): +1")
- 
-    # +1 confirmación 1h holgada (precio bien separado de EMA20 1h)
-    ema20_1h = market_data_sym.get('ema20_1h', 0)
-    price    = market_data_sym.get('price', 0)
-    if ema20_1h and price:
-        pct_from_ema = abs(price - ema20_1h) / ema20_1h * 100
-        correct_side = (
-            (direction == 'LONG'  and price > ema20_1h) or
-            (direction == 'SHORT' and price < ema20_1h)
-        )
-        if correct_side and pct_from_ema >= 0.3:
-            score += 1
-            details.append(f"1h holgada ({pct_from_ema:.2f}% desde EMA20 1h): +1")
- 
-    # +1 régimen maduro (>6 barras = >24h en el régimen actual)
-    bars = regime_info.get('bars_in_regime', 0)
-    if bars and bars > 6:
-        score += 1
-        details.append(f"régimen maduro ({bars} barras, >{bars*4}h): +1")
- 
-    # Clampar a 10
-    score = min(score, 10)
- 
-    return score, details
- 
- 
 def check_entry_conditions(symbol: str, market_data: dict, regime_info: dict) -> dict:
     """
     Filtro mecánico de entrada para Grupo A. Todas las condiciones deben cumplirse.
  
-    CAMBIO v3: retorna conviction score real (no hardcoded 9).
- 
-    Condiciones:
+    Gates (v3):
       1. Régimen HMM en BULL_TREND (→ LONG) o BEAR_TREND (→ SHORT)
-      2. EMA20/EMA50 alineada con el régimen
-      3. RSI en zona neutral — no sobrecomprado ni sobrevendido en la entrada
-      4. Volumen ≥ 1.2/1.3× promedio 20 períodos
-      5. Confirmación timeframe 1h (excepto EMA_CROSS)
+      2. Tipo de señal (EMA_CROSS, RSI_RECOVERY, RSI_REJECTION, ALIGNMENT)
+      3. EMA20/EMA50 alineada con el régimen
+      4. RSI en zona neutral (umbrales por signal_type)
+      5. Volumen ≥ 1.2/1.3× promedio 20 períodos
+      6. Confirmación timeframe 1h (EMA20 1h)
+      7. BTC correlation gate — bloquea LONG altcoins si BTC cae >2% en 4h
  
-    Retorna: {qualified, direction, conviction, conviction_details, reasons, blockers}
+    Retorna: {qualified, direction, reasons, blockers, signal_type}
     """
     blockers: list[str] = []
     reasons:  list[str] = []
  
     d = market_data.get(symbol, {})
     if d.get('error'):
-        return {'qualified': False, 'direction': None, 'conviction': 0,
+        return {'qualified': False, 'direction': None,
                 'reasons': [], 'blockers': [f'error de datos: {d["error"]}']}
  
     regime        = regime_info.get('regime')  if regime_info and regime_info.get('available') else None
@@ -298,8 +223,8 @@ def check_entry_conditions(symbol: str, market_data: dict, regime_info: dict) ->
         reasons.append('régimen BEAR_TREND ✓')
     else:
         blockers.append(f'régimen {regime or "DESCONOCIDO"} — sin tendencia clara')
-        return {'qualified': False, 'direction': None, 'conviction': 0,
-                'reasons': reasons, 'blockers': blockers, 'signal_type': None}
+        return {'qualified': False, 'direction': None, 'reasons': reasons,
+                'blockers': blockers, 'signal_type': None}
  
     # 2. Detectar tipo de señal
     signal_type = None
@@ -325,36 +250,28 @@ def check_entry_conditions(symbol: str, market_data: dict, regime_info: dict) ->
         if signal_type != 'EMA_CROSS':
             blockers.append(f'EMA {trend} no alinea con {direction}')
  
-# 4. RSI — umbrales calibrados por backtest (mayo 2026)
-    if regime == 'BULL_TREND':
-        rsi_max_long  = 72 if signal_type == 'EMA_CROSS' else 60
-        rsi_min_long  = 45 if signal_type == 'RSI_RECOVERY' else 42
-        rsi_min_short = 28 if signal_type == 'EMA_CROSS' else 35
-        rsi_max_short = 65 if signal_type == 'RSI_REJECTION' else 55
-    else:  # BEAR_TREND
-        rsi_max_long  = 72 if signal_type == 'EMA_CROSS' else 60
-        rsi_min_long  = 32
-        rsi_min_short = 25 if signal_type == 'EMA_CROSS' else 32
-        rsi_max_short = 65 if signal_type == 'RSI_REJECTION' else 58
+    # 4. RSI — rango más amplio si hay señal fuerte
+    rsi_max_long  = 72 if signal_type in ('EMA_CROSS',)        else 65
+    rsi_min_long  = 35 if signal_type in ('RSI_RECOVERY',)     else 42
+    rsi_min_short = 28 if signal_type in ('EMA_CROSS',)        else 35
+    rsi_max_short = 65 if signal_type in ('RSI_REJECTION',)    else 58
  
     if direction == 'LONG':
-        rsi_min, rsi_max = rsi_min_long, rsi_max_long
-        if rsi_min <= rsi <= rsi_max:
+        if rsi_min_long <= rsi <= rsi_max_long:
             reasons.append(f'RSI {rsi:.1f} ✓')
-        elif rsi > rsi_max:
+        elif rsi > rsi_max_long:
             blockers.append(f'RSI {rsi:.1f} sobrecomprado')
         else:
             blockers.append(f'RSI {rsi:.1f} débil para LONG')
     else:
-        rsi_min, rsi_max = rsi_min_short, rsi_max_short
-        if rsi_min <= rsi <= rsi_max:
+        if rsi_min_short <= rsi <= rsi_max_short:
             reasons.append(f'RSI {rsi:.1f} ✓')
-        elif rsi < rsi_min:
+        elif rsi < rsi_min_short:
             blockers.append(f'RSI {rsi:.1f} sobrevendido')
         else:
             blockers.append(f'RSI {rsi:.1f} alto para SHORT')
  
-    # 5. Volumen
+    # 5. Volumen — más estricto sin señal fuerte
     vol_min = 1.2 if signal_type else 1.3
     if vol_ratio >= vol_min:
         reasons.append(f'volumen {vol_ratio:.1f}x ✓')
@@ -373,7 +290,7 @@ def check_entry_conditions(symbol: str, market_data: dict, regime_info: dict) ->
                 reasons.append('precio > EMA20 1h ✓')
             else:
                 blockers.append('precio bajo EMA20 1h — sin confirmación intradiaria')
-        else:
+        else:  # SHORT
             if price_below_1h:
                 reasons.append('precio < EMA20 1h ✓')
             else:
@@ -381,32 +298,28 @@ def check_entry_conditions(symbol: str, market_data: dict, regime_info: dict) ->
     else:
         reasons.append('confirmación 1h omitida (EMA_CROSS es suficiente)')
  
+    # ── 7. BTC correlation gate (NUEVO v3) ────────────────────
+    # Si el símbolo NO es BTC y la dirección es LONG,
+    # verificar que BTC no esté cayendo >2% en la vela 4h actual.
+    # Racional: cuando BTC cae fuerte, las altcoins suelen caer más.
+    if symbol != 'BTC/USDT' and direction == 'LONG':
+        btc_data = market_data.get('BTC/USDT', {})
+        btc_change_4h = btc_data.get('change_4h', 0)
+        if btc_change_4h is not None and btc_change_4h <= BTC_CORR_DROP_PCT:
+            blockers.append(
+                f'BTC cayendo {btc_change_4h:+.2f}% en 4h — '
+                f'correlación bloquea LONG altcoin'
+            )
+        elif btc_change_4h is not None and btc_change_4h > BTC_CORR_DROP_PCT:
+            reasons.append(f'BTC estable en 4h ({btc_change_4h:+.2f}%) ✓')
+ 
     qualified = len(blockers) == 0
- 
-    # ── Conviction scoring (v3) ──────────────────────────────
-    # Solo se calcula si calificó — no tiene sentido scorear una señal bloqueada
-    conviction = 0
-    conviction_details = []
-    if qualified:
-        conviction, conviction_details = _calc_conviction(
-            direction=direction,
-            signal_type=signal_type,
-            rsi=rsi,
-            vol_ratio=vol_ratio,
-            regime_info=regime_info,
-            market_data_sym=d,
-            rsi_min=rsi_min,
-            rsi_max=rsi_max,
-        )
- 
     return {
-        'qualified':          qualified,
-        'direction':          direction if qualified else None,
-        'signal_type':        signal_type or 'ALIGNMENT',
-        'conviction':         conviction,
-        'conviction_details': conviction_details,
-        'reasons':            reasons,
-        'blockers':           blockers,
+        'qualified':   qualified,
+        'direction':   direction if qualified else None,
+        'signal_type': signal_type or 'ALIGNMENT',
+        'reasons':     reasons,
+        'blockers':    blockers,
     }
  
  
