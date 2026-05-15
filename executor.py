@@ -766,7 +766,16 @@ def close_trade(trade_id: int, exit_price: float, result: str) -> None:
 def check_open_positions(market_data: dict) -> list[dict]:
     """
     Revisa todas las posiciones OPEN contra el precio actual.
-    Cierra las que tocaron stop-loss o take-profit.
+ 
+    Lógica de salida dual (TP como trailing trigger):
+      1. Si precio tocó SL → cerrar como LOSS
+      2. Si precio alcanzó ≥1R a favor (distancia SL recorrida como ganancia):
+         → Mover SL a breakeven (entry_price)
+         → Desactivar TP estático (el trailing stop en main_async toma el control)
+         → Esto evita que el TP estático corte un movimiento que el trailing
+           podría capturar mejor
+      3. Si precio tocó TP estático (solo si no se desactivó en paso 2) → cerrar como WIN
+ 
     Retorna lista de trades cerrados en este ciclo.
     """
     conn   = sqlite3.connect(DB_PATH)
@@ -785,15 +794,46 @@ def check_open_positions(market_data: dict) -> list[dict]:
         result     = None
         exit_price = None
  
+        # Distancia original del SL (1R)
+        sl_distance = abs(entry - stop)
+ 
         if direction == 'LONG':
+            # Check SL
             if price <= stop:
                 result, exit_price = 'LOSS', stop
-            elif price >= target:
+ 
+            # Check si alcanzó ≥1R a favor → mover SL a breakeven, desactivar TP
+            elif sl_distance > 0 and (price - entry) >= sl_distance:
+                # Solo mover si el SL todavía está por debajo del entry
+                # (evita moverlo repetidamente)
+                if stop < entry:
+                    _move_sl_to_breakeven(trade_id, entry, direction)
+                    print(
+                        f"  [executor] Trade #{trade_id} {symbol} alcanzó 1R "
+                        f"→ SL movido a breakeven ${entry:.4f}, trailing toma control"
+                    )
+ 
+            # Check TP estático (solo si SL no está en breakeven,
+            # es decir, el trailing aún no tomó control)
+            elif stop < entry and price >= target:
                 result, exit_price = 'WIN', target
+ 
         else:  # SHORT
+            # Check SL
             if price >= stop:
                 result, exit_price = 'LOSS', stop
-            elif price <= target:
+ 
+            # Check si alcanzó ≥1R a favor → mover SL a breakeven, desactivar TP
+            elif sl_distance > 0 and (entry - price) >= sl_distance:
+                if stop > entry:
+                    _move_sl_to_breakeven(trade_id, entry, direction)
+                    print(
+                        f"  [executor] Trade #{trade_id} {symbol} alcanzó 1R "
+                        f"→ SL movido a breakeven ${entry:.4f}, trailing toma control"
+                    )
+ 
+            # Check TP estático (solo si SL no está en breakeven)
+            elif stop > entry and price <= target:
                 result, exit_price = 'WIN', target
  
         if result:
@@ -811,6 +851,31 @@ def check_open_positions(market_data: dict) -> list[dict]:
             print(f"  [executor] Trade #{trade_id} cerrado: {result} | {symbol} | PnL ${pnl:.2f}")
  
     return closed
+ 
+ 
+def _move_sl_to_breakeven(trade_id: int, entry_price: float, direction: str) -> None:
+    """
+    Mueve el SL al precio de entrada (breakeven) y desactiva el TP estático.
+ 
+    El TP se pone en un valor inalcanzable para que no compita con el trailing:
+      LONG  → TP = entry × 10 (nunca va a llegar)
+      SHORT → TP = entry × 0.01 (nunca va a llegar)
+ 
+    A partir de este punto, solo el trailing stop en main_async.py decide
+    cuándo cerrar el trade.
+    """
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        # TP inalcanzable para que el trailing decida
+        unreachable_tp = entry_price * 10 if direction == 'LONG' else entry_price * 0.01
+        conn.execute(
+            "UPDATE trades SET stop_loss=?, take_profit=? WHERE id=?",
+            (round(entry_price, 8), round(unreachable_tp, 8), trade_id)
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"  [executor] ERROR moviendo SL a breakeven #{trade_id}: {e}")
  
  
 def get_all_trades_stats() -> dict:
