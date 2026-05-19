@@ -626,10 +626,6 @@ def run_cycle():
             else:
                 log.warning(f"No ejecutado: {signal['symbol']}")
  
-    actionable = [s for s in signals if s.get("actionable")]
-    if actionable:
-        for sig in actionable:
-            tg.send_signal(sig, mkt)
  
     # 8. Actualizar contadores y estado
     _update_pair_stats(signals, mkt, regimes)
@@ -639,8 +635,6 @@ def run_cycle():
     write_dashboard_state(mkt, fng, regimes, signals, balance)
  
     # 10. Resumen Telegram
-    if state["analysis_cycles"] % 3 == 0 and signals or closed_trades:
-        tg.send_cycle_summary(signals, fng, tokens, balance, regimes)
  
     state["cycles_run"] += 1
     log.info(f"── Ciclo #{cycle_num} completado ──\n")
